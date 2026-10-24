@@ -38,8 +38,8 @@ const initialForm = () => ({
   packaging_cost: "0", other_unit_cost: "0", stock_quantity: "0",
   low_stock_limit: "5", customer_name: "", order_date: today(),
   status: "pending", delivery_charge: "0", cod_charge: "0",
-  discount: "0", amount_paid: "0", category: "Facebook Ads",
-  expense_date: today(), description: "", amount: ""
+  discount: "0", amount_paid: "0", product_id: "", quantity: "1",
+  category: "Facebook Ads", expense_date: today(), description: "", amount: ""
 });
 
 export default function Home() {
@@ -221,7 +221,15 @@ export default function Home() {
   const lifetimeDeliveryAndCod = delivered.reduce(
     (sum, o) => sum + Number(o.delivery_charge || 0) + Number(o.cod_charge || 0), 0
   );
-  const lifetimeBusinessExpenses = expenses.reduce(
+  // Product Purchase and Packaging costs are already counted per sold item
+  // from order_items. Exclude these categories here to avoid double counting.
+  const overheadExpenses = expenses.filter(
+    e => !["product purchase", "packaging"].includes(
+      String(e.category || "").trim().toLowerCase()
+    )
+  );
+
+  const lifetimeBusinessExpenses = overheadExpenses.reduce(
     (sum, e) => sum + Number(e.amount || 0), 0
   );
 
@@ -236,7 +244,7 @@ export default function Home() {
   const monthlyOrders = delivered.filter(
     o => (o.order_date || "").slice(0, 7) === selectedMonth
   );
-  const monthlyExpenses = expenses.filter(
+  const monthlyExpenses = overheadExpenses.filter(
     e => (e.expense_date || "").slice(0, 7) === selectedMonth
   );
 
@@ -299,7 +307,23 @@ export default function Home() {
         low_stock_limit: Number(form.low_stock_limit || 5)
       });
     } else if (tab === "Orders") {
-      result = await supabase.from("orders").insert({
+      const selectedProduct = products.find(
+        p => p.id === form.product_id && p.active !== false
+      );
+      const quantity = Math.floor(Number(form.quantity || 0));
+
+      if (!selectedProduct) {
+        setError("অর্ডারের জন্য আগে একটি পণ্য নির্বাচন করো।");
+        setSaving(false);
+        return;
+      }
+      if (!Number.isFinite(quantity) || quantity < 1) {
+        setError("পণ্যের পরিমাণ কমপক্ষে ১ হতে হবে।");
+        setSaving(false);
+        return;
+      }
+
+      const orderResult = await supabase.from("orders").insert({
         customer_name: form.customer_name.trim(),
         order_date: form.order_date,
         status: form.status,
@@ -307,7 +331,30 @@ export default function Home() {
         cod_charge: Number(form.cod_charge || 0),
         discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
-      });
+      }).select("id").single();
+
+      if (orderResult.error) {
+        result = orderResult;
+      } else {
+        const itemResult = await supabase.from("order_items").insert({
+          order_id: orderResult.data.id,
+          product_id: selectedProduct.id,
+          product_name: selectedProduct.name,
+          quantity,
+          unit_sale_price: Number(selectedProduct.sale_price || 0),
+          unit_purchase_cost: Number(selectedProduct.purchase_price || 0),
+          unit_packaging_cost: Number(selectedProduct.packaging_cost || 0),
+          unit_other_cost: Number(selectedProduct.other_unit_cost || 0)
+        });
+
+        if (itemResult.error) {
+          // Avoid leaving an order without its product line if item saving fails.
+          await supabase.from("orders").delete().eq("id", orderResult.data.id);
+          result = itemResult;
+        } else {
+          result = { error: null };
+        }
+      }
     } else {
       result = await supabase.from("expenses").insert({
         expense_date: form.expense_date,
@@ -501,7 +548,7 @@ export default function Home() {
             <div className="stats-grid">
               <Stat title="Lifetime Sales" value={money(lifetimeSales)} detail={`${delivered.length} delivered orders`} tone="purple" />
               <Stat title="Order Product Cost" value={money(lifetimeOrderCosts)} detail="ক্রয় + প্যাকেজিং + অন্যান্য ইউনিট খরচ" tone="orange" />
-              <Stat title="Business Expenses" value={money(lifetimeBusinessExpenses)} detail={`${expenses.length} expense entries`} tone="blue" />
+              <Stat title="Business Expenses" value={money(lifetimeBusinessExpenses)} detail={`${overheadExpenses.length} overhead entries`} tone="blue" />
               <Stat title="Lifetime Net Profit / Loss" value={money(lifetimeProfit)} detail={lifetimeProfit >= 0 ? "নিট লাভ" : "নিট লোকসান"} tone={lifetimeProfit >= 0 ? "green" : "red"} />
             </div>
 
@@ -515,7 +562,7 @@ export default function Home() {
                 <div className="status-row"><span>Product costs</span><b>− {money(lifetimeOrderCosts)}</b></div>
                 <div className="status-row"><span>Discounts</span><b>− {money(lifetimeDiscounts)}</b></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(lifetimeDeliveryAndCod)}</b></div>
-                <div className="status-row"><span>Other business expenses</span><b>− {money(lifetimeBusinessExpenses)}</b></div>
+                <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(lifetimeBusinessExpenses)}</b></div>
                 <div className="status-row"><strong>Lifetime Net Profit / Loss</strong><strong>{money(lifetimeProfit)}</strong></div>
               </div>
             </div>
@@ -531,7 +578,7 @@ export default function Home() {
             <div className="stats-grid">
               <Stat title="Monthly Sales" value={money(monthlySales)} detail={`${monthlyOrders.length} delivered orders`} tone="purple" />
               <Stat title="Monthly Product Cost" value={money(monthlyOrderCosts)} detail="পণ্যের মোট ইউনিট খরচ" tone="orange" />
-              <Stat title="Monthly Expenses" value={money(monthlyExpenseTotal)} detail={`${monthlyExpenses.length} expense entries`} tone="blue" />
+              <Stat title="Monthly Expenses" value={money(monthlyExpenseTotal)} detail={`${monthlyExpenses.length} overhead entries`} tone="blue" />
               <Stat title="Monthly Net Profit / Loss" value={money(monthlyProfit)} detail={monthlyProfit >= 0 ? "নির্বাচিত মাসে নিট লাভ" : "নির্বাচিত মাসে নিট লোকসান"} tone={monthlyProfit >= 0 ? "green" : "red"} />
             </div>
 
@@ -545,7 +592,7 @@ export default function Home() {
                 <div className="status-row"><span>Product costs</span><b>− {money(monthlyOrderCosts)}</b></div>
                 <div className="status-row"><span>Discounts</span><b>− {money(monthlyDiscounts)}</b></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(monthlyDeliveryAndCod)}</b></div>
-                <div className="status-row"><span>Other expenses</span><b>− {money(monthlyExpenseTotal)}</b></div>
+                <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(monthlyExpenseTotal)}</b></div>
                 <div className="status-row"><strong>Monthly Net Profit / Loss</strong><strong>{money(monthlyProfit)}</strong></div>
               </div>
             </div>
@@ -627,6 +674,15 @@ export default function Home() {
                   <div className="form-grid">
                     <Field label="Customer name *" value={form.customer_name} onChange={v => setForm({ ...form, customer_name: v })} required />
                     <Field label="Order date" type="date" value={form.order_date} onChange={v => setForm({ ...form, order_date: v })} />
+                    <label className="field"><span>Product *</span>
+                      <select value={form.product_id} onChange={e => setForm({ ...form, product_id: e.target.value })} required>
+                        <option value="">পণ্য নির্বাচন করো</option>
+                        {products.filter(p => p.active !== false).map(p => (
+                          <option key={p.id} value={p.id}>{p.name} — {money(p.sale_price)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <Field label="Quantity *" type="number" value={form.quantity} onChange={v => setForm({ ...form, quantity: v })} required />
                     <label className="field"><span>Status</span>
                       <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
                         {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
@@ -649,6 +705,9 @@ export default function Home() {
                     <Field label="Expense date" type="date" value={form.expense_date} onChange={v => setForm({ ...form, expense_date: v })} />
                     <Field label="Amount (৳) *" type="number" value={form.amount} onChange={v => setForm({ ...form, amount: v })} required />
                     <Field label="Description" value={form.description} onChange={v => setForm({ ...form, description: v })} />
+                    <p className="footnote" style={{ gridColumn: "1 / -1" }}>
+                      Product purchase ও Packaging খরচ এখানে নথিভুক্ত করা যাবে, তবে Net Profit-এ এই দুই category আবার বাদ হবে না—কারণ বিক্রি হওয়া পণ্যের খরচ order_items থেকে হিসাব করা হয়।
+                    </p>
                   </div>
                 )}
 
@@ -677,7 +736,7 @@ export default function Home() {
                 <div className="panel table-panel">
                   <OrdersTable orders={orders} changeStatus={changeStatus} />
                   {orders.length === 0 && <div className="empty-state">এখনো কোনো অর্ডার নেই। Add Order চাপুন।</div>}
-                  <p className="footnote">এই সংস্করণে অর্ডারের পণ্য ও পরিমাণ আলাদা করে যোগ করার ফিচার এখনো নেই। তাই পণ্যের তথ্য order_items-এ না থাকলে বিক্রি ও লাভের হিসাব সম্পূর্ণ হবে না।</p>
+                  <p className="footnote">নতুন অর্ডারে একটি পণ্য ও তার পরিমাণ সেভ হয়। এক অর্ডারে একাধিক পণ্য যোগ করার ব্যবস্থা এই সংস্করণে নেই। আগের অর্ডারগুলোর order_items তথ্য না থাকলে পুরোনো লাভের হিসাব অসম্পূর্ণ হতে পারে।</p>
                 </div>
               ) : (
                 <div className="panel table-panel">
