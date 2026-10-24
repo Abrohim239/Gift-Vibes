@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, supabaseReady } from "@/lib/supabase";
 import {
   LayoutDashboard, Package, ShoppingBag, Wallet, RefreshCw, Plus,
-  Menu, X, ArrowUpRight, AlertCircle, Download, LogOut, TrendingUp,
+  Menu, X, ArrowUpRight, AlertCircle, Download, LogOut, TrendingUp, Pencil, Trash2,
   TrendingDown, CalendarDays
 } from "lucide-react";
 
@@ -55,6 +55,8 @@ export default function Home() {
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<any>(initialForm());
+  const [editing, setEditing] = useState<any>(null);
+  const [orderCart, setOrderCart] = useState<any[]>([{ product_id: "", quantity: "1" }]);
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
@@ -282,6 +284,8 @@ export default function Home() {
     setNotice("");
     setError("");
     setForm(initialForm());
+    setEditing(null);
+    setOrderCart([{ product_id: "", quantity: "1" }]);
     setShowForm(true);
   }
 
@@ -296,7 +300,7 @@ export default function Home() {
     let result: any;
 
     if (tab === "Products & Stock") {
-      result = await supabase.from("products").insert({
+      const productPayload = {
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         purchase_price: Number(form.purchase_price || 0),
@@ -305,75 +309,114 @@ export default function Home() {
         other_unit_cost: Number(form.other_unit_cost || 0),
         stock_quantity: Number(form.stock_quantity || 0),
         low_stock_limit: Number(form.low_stock_limit || 5)
-      });
+      };
+      result = editing?.type === "product"
+        ? await supabase.from("products").update(productPayload).eq("id", editing.id)
+        : await supabase.from("products").insert(productPayload);
     } else if (tab === "Orders") {
-      const selectedProduct = products.find(
-        p => p.id === form.product_id && p.active !== false
-      );
-      const quantity = Math.floor(Number(form.quantity || 0));
-
-      if (!selectedProduct) {
-        setError("অর্ডারের জন্য আগে একটি পণ্য নির্বাচন করো।");
+      const validCart = orderCart.map(row => ({
+        product: products.find(p => p.id === row.product_id && p.active !== false),
+        quantity: Math.floor(Number(row.quantity || 0))
+      }));
+      if (!validCart.length || validCart.some(row => !row.product || !Number.isFinite(row.quantity) || row.quantity < 1)) {
+        setError("প্রতিটি পণ্য নির্বাচন করো এবং Quantity কমপক্ষে ১ দাও।");
         setSaving(false);
         return;
       }
-      if (!Number.isFinite(quantity) || quantity < 1) {
-        setError("পণ্যের পরিমাণ কমপক্ষে ১ হতে হবে।");
-        setSaving(false);
-        return;
-      }
-
-      const orderResult = await supabase.from("orders").insert({
-        customer_name: form.customer_name.trim(),
-        order_date: form.order_date,
-        status: form.status,
-        delivery_charge: Number(form.delivery_charge || 0),
-        cod_charge: Number(form.cod_charge || 0),
-        discount: Number(form.discount || 0),
+      const orderPayload = {
+        customer_name: form.customer_name.trim(), order_date: form.order_date,
+        status: form.status, delivery_charge: Number(form.delivery_charge || 0),
+        cod_charge: Number(form.cod_charge || 0), discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
-      }).select("id").single();
-
-      if (orderResult.error) {
-        result = orderResult;
+      };
+      if (editing?.type === "order") {
+        const upd = await supabase.from("orders").update(orderPayload).eq("id", editing.id);
+        if (upd.error) result = upd;
+        else {
+          const delItems = await supabase.from("order_items").delete().eq("order_id", editing.id);
+          if (delItems.error) result = delItems;
+          else {
+            const insItems = await supabase.from("order_items").insert(validCart.map(row => ({
+              order_id: editing.id, product_id: row.product!.id, product_name: row.product!.name,
+              quantity: row.quantity, unit_sale_price: Number(row.product!.sale_price || 0),
+              unit_purchase_cost: Number(row.product!.purchase_price || 0),
+              unit_packaging_cost: Number(row.product!.packaging_cost || 0),
+              unit_other_cost: Number(row.product!.other_unit_cost || 0)
+            })));
+            result = insItems;
+          }
+        }
       } else {
-        const itemResult = await supabase.from("order_items").insert({
-          order_id: orderResult.data.id,
-          product_id: selectedProduct.id,
-          product_name: selectedProduct.name,
-          quantity,
-          unit_sale_price: Number(selectedProduct.sale_price || 0),
-          unit_purchase_cost: Number(selectedProduct.purchase_price || 0),
-          unit_packaging_cost: Number(selectedProduct.packaging_cost || 0),
-          unit_other_cost: Number(selectedProduct.other_unit_cost || 0)
-        });
-
-        if (itemResult.error) {
-          // Avoid leaving an order without its product line if item saving fails.
-          await supabase.from("orders").delete().eq("id", orderResult.data.id);
-          result = itemResult;
-        } else {
-          result = { error: null };
+        const orderResult = await supabase.from("orders").insert(orderPayload).select("id").single();
+        if (orderResult.error) result = orderResult;
+        else {
+          const itemResult = await supabase.from("order_items").insert(validCart.map(row => ({
+            order_id: orderResult.data.id, product_id: row.product!.id, product_name: row.product!.name,
+            quantity: row.quantity, unit_sale_price: Number(row.product!.sale_price || 0),
+            unit_purchase_cost: Number(row.product!.purchase_price || 0),
+            unit_packaging_cost: Number(row.product!.packaging_cost || 0),
+            unit_other_cost: Number(row.product!.other_unit_cost || 0)
+          })));
+          if (itemResult.error) {
+            await supabase.from("orders").delete().eq("id", orderResult.data.id);
+            result = itemResult;
+          } else result = { error: null };
         }
       }
     } else {
-      result = await supabase.from("expenses").insert({
-        expense_date: form.expense_date,
-        category: form.category,
-        description: form.description.trim() || null,
-        amount: Number(form.amount),
+      const expensePayload = {
+        expense_date: form.expense_date, category: form.category,
+        description: form.description.trim() || null, amount: Number(form.amount),
         payment_method: "cash"
-      });
+      };
+      result = editing?.type === "expense"
+        ? await supabase.from("expenses").update(expensePayload).eq("id", editing.id)
+        : await supabase.from("expenses").insert(expensePayload);
     }
 
     if (result.error) {
       setError(result.error.message);
     } else {
-      setNotice("রেকর্ড সফলভাবে যোগ হয়েছে।");
+      setNotice(editing ? "রেকর্ড আপডেট হয়েছে।" : "রেকর্ড সফলভাবে যোগ হয়েছে।");
+      setEditing(null);
       setShowForm(false);
       await load();
     }
 
     setSaving(false);
+  }
+
+  async function deleteRecord(type: "product" | "order" | "expense", id: string) {
+    if (!supabase || !confirm("এই তথ্যটি Delete করতে চান?")) return;
+    setError(""); setNotice("");
+    let r: any;
+    if (type === "product") r = await supabase.from("products").delete().eq("id", id);
+    else if (type === "expense") r = await supabase.from("expenses").delete().eq("id", id);
+    else {
+      const ir = await supabase.from("order_items").delete().eq("order_id", id);
+      if (ir.error) { setError(ir.error.message); return; }
+      r = await supabase.from("orders").delete().eq("id", id);
+    }
+    if (r.error) setError("Delete করা যায়নি: " + r.error.message);
+    else { setNotice("তথ্য Delete হয়েছে।"); await load(); }
+  }
+
+  function editRecord(type: "product" | "order" | "expense", record: any) {
+    setError(""); setNotice(""); setEditing({ type, id: record.id });
+    if (type === "product") setForm({ ...initialForm(), ...record,
+      purchase_price: String(record.purchase_price ?? 0), sale_price: String(record.sale_price ?? 0),
+      packaging_cost: String(record.packaging_cost ?? 0), other_unit_cost: String(record.other_unit_cost ?? 0),
+      stock_quantity: String(record.stock_quantity ?? 0), low_stock_limit: String(record.low_stock_limit ?? 5) });
+    else if (type === "expense") setForm({ ...initialForm(), ...record,
+      amount: String(record.amount ?? 0), description: record.description || "" });
+    else {
+      setForm({ ...initialForm(), ...record, customer_name: record.customer_name || "",
+        delivery_charge: String(record.delivery_charge ?? 0), cod_charge: String(record.cod_charge ?? 0),
+        discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
+      const existing = items.filter(it => it.order_id === record.id);
+      setOrderCart(existing.length ? existing.map(it => ({ product_id: it.product_id || "", quantity: String(it.quantity || 1) })) : [{ product_id: "", quantity: "1" }]);
+    }
+    setShowForm(true);
   }
 
   async function changeStatus(order: Order, status: string) {
@@ -632,7 +675,7 @@ export default function Home() {
               <div className="panel-title"><div><h3>Recent orders</h3><p>সর্বশেষ যোগ করা অর্ডার</p></div>
                 <button className="text-btn" onClick={() => setTab("Orders")}>সব অর্ডার <ArrowUpRight size={15} /></button>
               </div>
-              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} />
+              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
             </div>
           </div>
         )}
@@ -653,8 +696,8 @@ export default function Home() {
             {showForm && (
               <form className="panel form-panel" onSubmit={saveRecord}>
                 <div className="panel-title">
-                  <div><h3>নতুন {tab === "Products & Stock" ? "পণ্য" : tab === "Orders" ? "অর্ডার" : "খরচ"} যোগ করুন</h3><p>প্রয়োজনীয় তথ্য পূরণ করুন</p></div>
-                  <button type="button" className="icon-btn" onClick={() => setShowForm(false)}><X size={17} /></button>
+                  <div><h3>{editing ? "তথ্য Edit করুন" : `নতুন ${tab === "Products & Stock" ? "পণ্য" : tab === "Orders" ? "অর্ডার" : "খরচ"} যোগ করুন`}</h3><p>প্রয়োজনীয় তথ্য পূরণ করুন</p></div>
+                  <button type="button" className="icon-btn" onClick={() => { setShowForm(false); setEditing(null); }}><X size={17} /></button>
                 </div>
 
                 {tab === "Products & Stock" && (
@@ -674,15 +717,24 @@ export default function Home() {
                   <div className="form-grid">
                     <Field label="Customer name *" value={form.customer_name} onChange={v => setForm({ ...form, customer_name: v })} required />
                     <Field label="Order date" type="date" value={form.order_date} onChange={v => setForm({ ...form, order_date: v })} />
-                    <label className="field"><span>Product *</span>
-                      <select value={form.product_id} onChange={e => setForm({ ...form, product_id: e.target.value })} required>
-                        <option value="">পণ্য নির্বাচন করো</option>
-                        {products.filter(p => p.active !== false).map(p => (
-                          <option key={p.id} value={p.id}>{p.name} — {money(p.sale_price)}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <Field label="Quantity *" type="number" value={form.quantity} onChange={v => setForm({ ...form, quantity: v })} required />
+                    <div style={{ gridColumn: "1 / -1" }}>
+                      <b>অর্ডারের পণ্যসমূহ</b>
+                      {orderCart.map((row, idx) => {
+                        const prod = products.find(p => p.id === row.product_id);
+                        return <div key={idx} className="form-grid" style={{ marginTop: 10, padding: 12, border: "1px solid #eee", borderRadius: 10 }}>
+                          <label className="field"><span>Product *</span>
+                            <select value={row.product_id} onChange={e => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, product_id: e.target.value } : r))} required>
+                              <option value="">পণ্য নির্বাচন করো</option>
+                              {products.filter(p => p.active !== false).map(p => <option key={p.id} value={p.id}>{p.name} — {money(p.sale_price)}</option>)}
+                            </select>
+                          </label>
+                          <Field label="Quantity *" type="number" value={row.quantity} onChange={v => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, quantity: v } : r))} required />
+                          <div style={{ alignSelf: "end" }}><b>দাম: {money(Number(prod?.sale_price || 0) * Number(row.quantity || 0))}</b> <button type="button" className="btn secondary" onClick={() => setOrderCart(cart => cart.filter((_, i) => i !== idx))} disabled={orderCart.length === 1}>Remove</button></div>
+                        </div>;
+                      })}
+                      <button type="button" className="btn secondary" style={{ marginTop: 10 }} onClick={() => setOrderCart(cart => [...cart, { product_id: "", quantity: "1" }])}><Plus size={15}/> আরও পণ্য যোগ করুন</button>
+                      <p className="footnote">পণ্যের Sell Price থেকে মোট দাম হিসাব হবে। Amount Paid-এ বাস্তবে পাওয়া টাকা লিখবে।</p>
+                    </div>
                     <label className="field"><span>Status</span>
                       <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
                         {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
@@ -712,8 +764,8 @@ export default function Home() {
                 )}
 
                 <div className="form-footer">
-                  <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
-                  <button className="btn primary" disabled={saving}>{saving ? "Saving..." : "Save record"}</button>
+                  <button type="button" className="btn secondary" onClick={() => { setShowForm(false); setEditing(null); }}>Cancel</button>
+                  <button className="btn primary" disabled={saving}>{saving ? "Saving..." : editing ? "Update record" : "Save record"}</button>
                 </div>
               </form>
             )}
@@ -721,12 +773,12 @@ export default function Home() {
             {loading ? <div className="panel empty-state">লোড হচ্ছে...</div> :
               tab === "Products & Stock" ? (
                 <div className="panel table-panel">
-                  <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase</th><th>Sale</th><th>Unit margin*</th></tr></thead>
+                  <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase</th><th>Sale</th><th>Unit margin*</th><th>Actions</th></tr></thead>
                     <tbody>{products.map(p => <tr key={p.id}>
                       <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
                       <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
                       <td>{money(p.purchase_price)}</td><td>{money(p.sale_price)}</td>
-                      <td>{money(Number(p.sale_price) - Number(p.purchase_price) - Number(p.packaging_cost) - Number(p.other_unit_cost))}</td>
+                      <td>{money(Number(p.sale_price) - Number(p.purchase_price) - Number(p.packaging_cost) - Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button></td>
                     </tr>)}</tbody>
                   </table>
                   {products.length === 0 && <div className="empty-state">এখনো কোনো পণ্য যোগ করা হয়নি। Add Product চাপুন।</div>}
@@ -734,15 +786,15 @@ export default function Home() {
                 </div>
               ) : tab === "Orders" ? (
                 <div className="panel table-panel">
-                  <OrdersTable orders={orders} changeStatus={changeStatus} />
+                  <OrdersTable orders={orders} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
                   {orders.length === 0 && <div className="empty-state">এখনো কোনো অর্ডার নেই। Add Order চাপুন।</div>}
-                  <p className="footnote">নতুন অর্ডারে একটি পণ্য ও তার পরিমাণ সেভ হয়। এক অর্ডারে একাধিক পণ্য যোগ করার ব্যবস্থা এই সংস্করণে নেই। আগের অর্ডারগুলোর order_items তথ্য না থাকলে পুরোনো লাভের হিসাব অসম্পূর্ণ হতে পারে।</p>
+                  <p className="footnote">একটি অর্ডারে একাধিক পণ্য যোগ করা যায়। Amount Paid-এ পাওয়া টাকা সংরক্ষিত থাকে।</p>
                 </div>
               ) : (
                 <div className="panel table-panel">
-                  <table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th></tr></thead>
+                  <table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead>
                     <tbody>{expenses.map(e => <tr key={e.id}>
-                      <td>{e.expense_date}</td><td>{e.category}</td><td>{e.description || "—"}</td><td className="amount">{money(e.amount)}</td>
+                      <td>{e.expense_date}</td><td>{e.category}</td><td>{e.description || "—"}</td><td className="amount">{money(e.amount)}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("expense", e)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("expense", e.id)}><Trash2 size={15}/></button></td>
                     </tr>)}</tbody>
                   </table>
                   {expenses.length === 0 && <div className="empty-state">এখনো কোনো খরচ যোগ করা হয়নি।</div>}
@@ -780,18 +832,20 @@ function Field({ label, value, onChange, type = "text", required = false }: {
   </label>;
 }
 
-function OrdersTable({ orders, changeStatus }: {
+function OrdersTable({ orders, changeStatus, editRecord, deleteRecord }: {
   orders: Order[]; changeStatus: (o: Order, s: string) => void;
+  editRecord: (type: "product" | "order" | "expense", record: any) => void;
+  deleteRecord: (type: "product" | "order" | "expense", id: string) => void;
 }) {
   return <div className="table-scroll">
-    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th></tr></thead>
+    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
       <tbody>{orders.map(o => <tr key={o.id}>
         <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
         <td><select className={`status-select ${o.status}`} value={o.status}
           onChange={e => changeStatus(o, e.target.value)}>
           {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
         </select></td>
-        <td>{money(o.amount_paid)}</td>
+        <td>{money(o.amount_paid)}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("order", o)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("order", o.id)}><Trash2 size={15}/></button></td>
       </tr>)}</tbody>
     </table>
   </div>;
