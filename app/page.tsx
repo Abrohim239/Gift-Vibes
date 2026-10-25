@@ -55,6 +55,7 @@ export default function Home() {
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<any>(initialForm());
+  const [editingRecord, setEditingRecord] = useState<{ type: string; id: string } | null>(null);
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
@@ -296,7 +297,57 @@ export default function Home() {
     setNotice("");
     setError("");
     setForm(initialForm());
+    setEditingRecord(null);
     setShowForm(true);
+  }
+
+  function editRecord(type: string, record: any) {
+    setError("");
+    setNotice("");
+    setEditingRecord({ type, id: record.id });
+    if (type === "product") {
+      setTab("Products & Stock");
+      setForm({ ...initialForm(), name: record.name || "", sku: record.sku || "", purchase_price: String(record.purchase_price ?? 0), sale_price: String(record.sale_price ?? 0), packaging_cost: String(record.packaging_cost ?? 0), other_unit_cost: String(record.other_unit_cost ?? 0), stock_quantity: String(record.stock_quantity ?? 0), low_stock_limit: String(record.low_stock_limit ?? 5) });
+    } else if (type === "order") {
+      setTab("Orders");
+      const item = items.find((it: any) => it.order_id === record.id);
+      setForm({ ...initialForm(), customer_name: record.customer_name || "", order_date: record.order_date || today(), status: record.status || "pending", delivery_charge: String(record.delivery_charge ?? 0), cod_charge: String(record.cod_charge ?? 0), discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0), product_id: item?.product_id || "", quantity: String(item?.quantity ?? 1), sale_price: String(item?.unit_sale_price ?? 0) });
+    } else {
+      setTab("Expenses");
+      setForm({ ...initialForm(), expense_date: record.expense_date || today(), category: record.category || "Other", description: record.description || "", amount: String(record.amount ?? 0) });
+    }
+    setShowForm(true);
+  }
+
+  async function deleteRecord(type: string, record: any) {
+    if (!supabase) return;
+    const label = type === "product" ? "এই Product" : type === "order" ? `Order #${record.order_number}` : "এই Expense";
+    if (!window.confirm(`${label} Delete করতে চান? এই কাজটি ফিরিয়ে আনা যাবে না।`)) return;
+    setError(""); setNotice("");
+    try {
+      let error: any = null;
+      if (type === "product") {
+        const result = await supabase.from("products").delete().eq("id", record.id);
+        error = result.error;
+      } else if (type === "expense") {
+        const result = await supabase.from("expenses").delete().eq("id", record.id);
+        error = result.error;
+      } else {
+        if (record.status === "delivered") {
+          const restore = await supabase.rpc("set_order_status_stock", { p_order_id: record.id, p_status: "cancelled", p_return_fee: 0 });
+          if (restore.error) throw new Error(restore.error.message);
+        }
+        const itemResult = await supabase.from("order_items").delete().eq("order_id", record.id);
+        if (itemResult.error) throw new Error(itemResult.error.message);
+        const orderResult = await supabase.from("orders").delete().eq("id", record.id);
+        error = orderResult.error;
+      }
+      if (error) throw new Error(error.message);
+      setNotice("রেকর্ড Delete হয়েছে।");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Delete করা যায়নি।");
+    }
   }
 
   async function saveRecord(ev: React.FormEvent) {
@@ -310,7 +361,7 @@ export default function Home() {
     let result: any;
 
     if (tab === "Products & Stock") {
-      result = await supabase.from("products").insert({
+      const productPayload = {
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         purchase_price: Number(form.purchase_price || 0),
@@ -319,7 +370,10 @@ export default function Home() {
         other_unit_cost: Number(form.other_unit_cost || 0),
         stock_quantity: Number(form.stock_quantity || 0),
         low_stock_limit: Number(form.low_stock_limit || 5)
-      });
+      };
+      result = editingRecord?.type === "product"
+        ? await supabase.from("products").update(productPayload).eq("id", editingRecord.id)
+        : await supabase.from("products").insert(productPayload);
     } else if (tab === "Orders") {
       const selectedProduct = products.find(
         p => p.id === form.product_id && p.active !== false
@@ -337,15 +391,20 @@ export default function Home() {
         return;
       }
 
-      const orderResult = await supabase.from("orders").insert({
+      const orderPayload = {
         customer_name: form.customer_name.trim(),
         order_date: form.order_date,
-        status: form.status,
         delivery_charge: Number(form.delivery_charge || 0),
         cod_charge: Number(form.cod_charge || 0),
         discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
-      }).select("id").single();
+      };
+
+      if (editingRecord?.type === "order") {
+        // Editing an existing order changes its details only; stock-sensitive status changes stay in the status dropdown.
+        result = await supabase.from("orders").update(orderPayload).eq("id", editingRecord.id);
+      } else {
+      const orderResult = await supabase.from("orders").insert({ ...orderPayload, status: form.status }).select("id").single();
 
       if (orderResult.error) {
         result = orderResult;
@@ -369,21 +428,26 @@ export default function Home() {
           result = { error: null };
         }
       }
+      }
     } else {
-      result = await supabase.from("expenses").insert({
+      const expensePayload = {
         expense_date: form.expense_date,
         category: form.category,
         description: form.description.trim() || null,
         amount: Number(form.amount),
         payment_method: "cash"
-      });
+      };
+      result = editingRecord?.type === "expense"
+        ? await supabase.from("expenses").update(expensePayload).eq("id", editingRecord.id)
+        : await supabase.from("expenses").insert(expensePayload);
     }
 
     if (result.error) {
       setError(result.error.message);
     } else {
-      setNotice("রেকর্ড সফলভাবে যোগ হয়েছে।");
+      setNotice(editingRecord ? "রেকর্ড আপডেট হয়েছে।" : "রেকর্ড সফলভাবে যোগ হয়েছে।");
       setShowForm(false);
+      setEditingRecord(null);
       await load();
     }
 
@@ -669,7 +733,7 @@ export default function Home() {
               <div className="panel-title"><div><h3>Recent orders</h3><p>সর্বশেষ যোগ করা অর্ডার</p></div>
                 <button className="text-btn" onClick={() => setTab("Orders")}>সব অর্ডার <ArrowUpRight size={15} /></button>
               </div>
-              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} items={items} />
+              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} items={items} editRecord={editRecord} deleteRecord={deleteRecord} />
             </div>
           </div>
         )}
@@ -690,8 +754,8 @@ export default function Home() {
             {showForm && (
               <form className="panel form-panel" onSubmit={saveRecord}>
                 <div className="panel-title">
-                  <div><h3>নতুন {tab === "Products & Stock" ? "পণ্য" : tab === "Orders" ? "অর্ডার" : "খরচ"} যোগ করুন</h3><p>প্রয়োজনীয় তথ্য পূরণ করুন</p></div>
-                  <button type="button" className="icon-btn" onClick={() => setShowForm(false)}><X size={17} /></button>
+                  <div><h3>{editingRecord ? "রেকর্ড Edit করুন" : `নতুন ${tab === "Products & Stock" ? "পণ্য" : tab === "Orders" ? "অর্ডার" : "খরচ"} যোগ করুন`}</h3><p>প্রয়োজনীয় তথ্য পূরণ করুন</p></div>
+                  <button type="button" className="icon-btn" onClick={() => { setShowForm(false); setEditingRecord(null); }}><X size={17} /></button>
                 </div>
 
                 {tab === "Products & Stock" && (
@@ -749,8 +813,8 @@ export default function Home() {
                 )}
 
                 <div className="form-footer">
-                  <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
-                  <button className="btn primary" disabled={saving}>{saving ? "Saving..." : "Save record"}</button>
+                  <button type="button" className="btn secondary" onClick={() => { setShowForm(false); setEditingRecord(null); }}>Cancel</button>
+                  <button className="btn primary" disabled={saving}>{saving ? "Saving..." : editingRecord ? "Update record" : "Save record"}</button>
                 </div>
               </form>
             )}
@@ -758,12 +822,13 @@ export default function Home() {
             {loading ? <div className="panel empty-state">লোড হচ্ছে...</div> :
               tab === "Products & Stock" ? (
                 <div className="panel table-panel">
-                  <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase</th><th>Sale</th><th>Unit margin*</th></tr></thead>
+                  <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase</th><th>Sale</th><th>Unit margin*</th><th>Actions</th></tr></thead>
                     <tbody>{products.map(p => <tr key={p.id}>
                       <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
                       <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
                       <td>{money(p.purchase_price)}</td><td>{money(p.sale_price)}</td>
                       <td>{money(Number(p.sale_price) - Number(p.purchase_price) - Number(p.packaging_cost) - Number(p.other_unit_cost))}</td>
+                      <td><button className="btn secondary" onClick={() => editRecord("product", p)}>Edit</button> <button className="btn secondary" onClick={() => void deleteRecord("product", p)}>Delete</button></td>
                     </tr>)}</tbody>
                   </table>
                   {products.length === 0 && <div className="empty-state">এখনো কোনো পণ্য যোগ করা হয়নি। Add Product চাপুন।</div>}
@@ -771,15 +836,16 @@ export default function Home() {
                 </div>
               ) : tab === "Orders" ? (
                 <div className="panel table-panel">
-                  <OrdersTable orders={orders} changeStatus={changeStatus} items={items} />
+                  <OrdersTable orders={orders} changeStatus={changeStatus} items={items} editRecord={editRecord} deleteRecord={deleteRecord} />
                   {orders.length === 0 && <div className="empty-state">এখনো কোনো অর্ডার নেই। Add Order চাপুন।</div>}
                   <p className="footnote">নতুন অর্ডারে একটি পণ্য ও তার পরিমাণ সেভ হয়। এক অর্ডারে একাধিক পণ্য যোগ করার ব্যবস্থা এই সংস্করণে নেই। আগের অর্ডারগুলোর order_items তথ্য না থাকলে পুরোনো লাভের হিসাব অসম্পূর্ণ হতে পারে।</p>
                 </div>
               ) : (
                 <div className="panel table-panel">
-                  <table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th></tr></thead>
+                  <table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead>
                     <tbody>{expenses.map(e => <tr key={e.id}>
                       <td>{e.expense_date}</td><td>{e.category}</td><td>{e.description || "—"}</td><td className="amount">{money(e.amount)}</td>
+                      <td><button className="btn secondary" onClick={() => editRecord("expense", e)}>Edit</button> <button className="btn secondary" onClick={() => void deleteRecord("expense", e)}>Delete</button></td>
                     </tr>)}</tbody>
                   </table>
                   {expenses.length === 0 && <div className="empty-state">এখনো কোনো খরচ যোগ করা হয়নি।</div>}
@@ -820,11 +886,15 @@ function Field({ label, value, onChange, type = "text", required = false }: {
 function OrdersTable({
   orders,
   changeStatus,
-  items
+  items,
+  editRecord,
+  deleteRecord
 }: {
   orders: Order[];
   changeStatus: (o: Order, s: string) => void;
   items: any[];
+  editRecord: (type: string, record: any) => void;
+  deleteRecord: (type: string, record: any) => void;
 }) {
   function getOrderProfit(order: Order): number | null {
     const orderItems = items.filter(item => item.order_id === order.id);
@@ -849,7 +919,7 @@ function OrdersTable({
   }
 
   return <div className="table-scroll">
-    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th><th>Profit / Loss</th></tr></thead>
+    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th><th>Profit / Loss</th><th>Actions</th></tr></thead>
       <tbody>{orders.map(o => {
         const profit = getOrderProfit(o);
         return <tr key={o.id}>
@@ -863,6 +933,7 @@ function OrdersTable({
           </td>
           <td>{money(o.amount_paid)}</td>
           <td>{profit === null ? "—" : <b style={{ color: profit < 0 ? "#c62828" : "#16803c" }}>{profit < 0 ? "−" : ""}{money(Math.abs(profit))}</b>}</td>
+          <td><button className="btn secondary" onClick={() => editRecord("order", o)}>Edit</button> <button className="btn secondary" onClick={() => void deleteRecord("order", o)}>Delete</button></td>
         </tr>;
       })}</tbody>
     </table>
