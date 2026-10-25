@@ -297,9 +297,10 @@ export default function Home() {
     setError("");
     setNotice("");
 
-    let result: any;
+    try {
+      let result: any;
 
-    if (tab === "Products & Stock") {
+      if (tab === "Products & Stock") {
       const productPayload = {
         name: form.name.trim(),
         sku: form.sku.trim() || null,
@@ -322,7 +323,6 @@ export default function Home() {
       }));
       if (!validCart.length || validCart.some(row => !row.product || !Number.isFinite(row.quantity) || row.quantity < 1 || !Number.isFinite(row.sale_price) || row.sale_price < 0)) {
         setError("প্রতিটি পণ্য নির্বাচন করো, Quantity কমপক্ষে ১ এবং Sell Price ০ বা তার বেশি দাও।");
-        setSaving(false);
         return;
       }
       const orderPayload = {
@@ -385,7 +385,11 @@ export default function Home() {
       await load();
     }
 
-    setSaving(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Save করা যায়নি। আবার চেষ্টা করো।");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function deleteRecord(type: "product" | "order" | "expense", id: string) {
