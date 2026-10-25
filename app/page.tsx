@@ -154,7 +154,7 @@ export default function Home() {
     setAuthError("");
 
     const { error } = await supabase.auth.signInWithPassword({
-      email: loginEmail.trim(),
+      email: String(loginEmail ?? "").trim(),
       password: loginPassword
     });
 
@@ -302,8 +302,8 @@ export default function Home() {
 
       if (tab === "Products & Stock") {
       const productPayload = {
-        name: form.name.trim(),
-        sku: form.sku.trim() || null,
+        name: String(form.name ?? "").trim(),
+        sku: String(form.sku ?? "").trim() || null,
         purchase_price: Number(form.purchase_price || 0),
         // Keep legacy database column compatible; sale price is entered per order now.
         sale_price: 0,
@@ -326,7 +326,7 @@ export default function Home() {
         return;
       }
       const orderPayload = {
-        customer_name: form.customer_name.trim(), order_date: form.order_date,
+        customer_name: String(form.customer_name ?? "").trim(), order_date: form.order_date,
         status: form.status, delivery_charge: Number(form.delivery_charge || 0),
         cod_charge: Number(form.cod_charge || 0), discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
@@ -368,7 +368,7 @@ export default function Home() {
     } else {
       const expensePayload = {
         expense_date: form.expense_date, category: form.category,
-        description: form.description.trim() || null, amount: Number(form.amount),
+        description: String(form.description ?? "").trim() || null, amount: Number(form.amount),
         payment_method: "cash"
       };
       result = editing?.type === "expense"
