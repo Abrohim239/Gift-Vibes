@@ -681,7 +681,7 @@ export default function Home() {
               <div className="panel-title"><div><h3>Recent orders</h3><p>সর্বশেষ যোগ করা অর্ডার</p></div>
                 <button className="text-btn" onClick={() => setTab("Orders")}>সব অর্ডার <ArrowUpRight size={15} /></button>
               </div>
-              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
+              <OrdersTable orders={orders.slice(0, 5)} itemTotals={itemTotals} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
             </div>
           </div>
         )}
@@ -748,7 +748,22 @@ export default function Home() {
                         </div>;
                       })}
                       <button type="button" className="btn secondary" style={{ marginTop: 10 }} onClick={() => setOrderCart(cart => [...cart, { product_id: "", quantity: "1", sale_price: "" }])}><Plus size={15}/> আরও পণ্য যোগ করুন</button>
-                      <p className="footnote">Buy Price + Packaging Cost + Other Cost = প্রতি পিসের মোট খরচ। প্রতিটি অর্ডারে আলাদা Sell Price লিখবে। মোট বিক্রয়মূল্য = Quantity × Sell Price। Amount Paid-এ বাস্তবে পাওয়া টাকা লিখবে।</p>
+                      <div style={{ marginTop: 14, padding: 14, borderRadius: 10, border: "1px solid #cbd5e1", background: "#f8fafc" }}>
+                        {(() => {
+                          const orderSaleTotal = orderCart.reduce((sum, row) => sum + Number(row.quantity || 0) * Number(row.sale_price || 0), 0);
+                          const orderCostTotal = orderCart.reduce((sum, row) => {
+                            const p = products.find(item => item.id === row.product_id);
+                            return sum + Number(row.quantity || 0) * (Number(p?.purchase_price || 0) + Number(p?.packaging_cost || 0) + Number(p?.other_unit_cost || 0));
+                          }, 0);
+                          const estimatedProfit = orderSaleTotal - orderCostTotal - Number(form.discount || 0) - Number(form.delivery_charge || 0) - Number(form.cod_charge || 0);
+                          return <div style={{ display: "flex", flexWrap: "wrap", gap: 18 }}>
+                            <span>সব পণ্যের মোট অর্ডার মূল্য: <b>{money(orderSaleTotal)}</b></span>
+                            <span>সব পণ্যের মোট খরচ: <b>{money(orderCostTotal)}</b></span>
+                            <span>আনুমানিক লাভ/ক্ষতি: <b style={{ color: estimatedProfit < 0 ? "#dc2626" : "#15803d" }}>{estimatedProfit < 0 ? "ক্ষতি " : "লাভ "}{money(Math.abs(estimatedProfit))}</b></span>
+                          </div>;
+                        })()}
+                      </div>
+                      <p className="footnote">অর্ডার মূল্য = সব পণ্যের Quantity × Sell Price যোগফল। আনুমানিক লাভ/ক্ষতি = অর্ডার মূল্য − পণ্যের খরচ − Discount − Delivery charge − COD charge।</p>
                     </div>
                     <label className="field"><span>Status</span>
                       <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
@@ -801,7 +816,7 @@ export default function Home() {
                 </div>
               ) : tab === "Orders" ? (
                 <div className="panel table-panel">
-                  <OrdersTable orders={orders} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
+                  <OrdersTable orders={orders} itemTotals={itemTotals} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
                   {orders.length === 0 && <div className="empty-state">এখনো কোনো অর্ডার নেই। Add Order চাপুন।</div>}
                   <p className="footnote">একটি অর্ডারে একাধিক পণ্য যোগ করা যায়। Amount Paid-এ পাওয়া টাকা সংরক্ষিত থাকে।</p>
                 </div>
@@ -847,21 +862,29 @@ function Field({ label, value, onChange, type = "text", required = false }: {
   </label>;
 }
 
-function OrdersTable({ orders, changeStatus, editRecord, deleteRecord }: {
-  orders: Order[]; changeStatus: (o: Order, s: string) => void;
+function OrdersTable({ orders, itemTotals, changeStatus, editRecord, deleteRecord }: {
+  orders: Order[];
+  itemTotals: Record<string, { revenue: number; cost: number }>;
+  changeStatus: (o: Order, s: string) => void;
   editRecord: (type: "product" | "order" | "expense", record: any) => void;
   deleteRecord: (type: "product" | "order" | "expense", id: string) => void;
 }) {
   return <div className="table-scroll">
-    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
-      <tbody>{orders.map(o => <tr key={o.id}>
-        <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
-        <td><select className={`status-select ${o.status}`} value={o.status}
-          onChange={e => changeStatus(o, e.target.value)}>
-          {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
-        </select></td>
-        <td>{money(o.amount_paid)}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("order", o)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("order", o.id)}><Trash2 size={15}/></button></td>
-      </tr>)}</tbody>
+    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
+      <tbody>{orders.map(o => {
+        const totals = itemTotals[o.id] || { revenue: 0, cost: 0 };
+        const profit = totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
+        return <tr key={o.id}>
+          <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
+          <td><b>{money(totals.revenue)}</b></td>
+          <td><b style={{ color: profit < 0 ? "#dc2626" : "#15803d" }}>{profit < 0 ? "ক্ষতি " : "লাভ "}{money(Math.abs(profit))}</b></td>
+          <td><select className={`status-select ${o.status}`} value={o.status}
+            onChange={e => changeStatus(o, e.target.value)}>
+            {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
+          </select></td>
+          <td>{money(o.amount_paid)}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("order", o)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("order", o.id)}><Trash2 size={15}/></button></td>
+        </tr>;
+      })}</tbody>
     </table>
   </div>;
 }
