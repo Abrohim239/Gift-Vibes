@@ -778,7 +778,7 @@ export default function Home() {
                       <select value={form.product_id} onChange={e => setForm({ ...form, product_id: e.target.value })} required>
                         <option value="">পণ্য নির্বাচন করো</option>
                         {products.filter(p => p.active !== false).map(p => (
-                          <option key={p.id} value={p.id}>{p.name} — {money(p.sale_price)}</option>
+                          <option key={p.id} value={p.id}>{p.name} — Buy Price: {money(p.purchase_price)}</option>
                         ))}
                       </select>
                     </label>
