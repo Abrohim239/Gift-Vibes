@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, supabaseReady } from "@/lib/supabase";
 import {
   LayoutDashboard, Package, ShoppingBag, Wallet, RefreshCw, Plus,
-  Menu, X, ArrowUpRight, AlertCircle, Download, LogOut, TrendingUp, Pencil, Trash2,
+  Menu, X, ArrowUpRight, AlertCircle, Download, LogOut, TrendingUp,
   TrendingDown, CalendarDays
 } from "lucide-react";
 
@@ -17,7 +17,7 @@ type Product = {
 type Order = {
   id: string; order_number: number; customer_name: string; order_date: string;
   status: string; delivery_charge: number; cod_charge: number;
-  discount: number; amount_paid: number;
+  discount: number; amount_paid: number; return_fee?: number;
 };
 type Expense = {
   id: string; expense_date: string; category: string;
@@ -55,8 +55,6 @@ export default function Home() {
   const [showForm, setShowForm] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState<any>(initialForm());
-  const [editing, setEditing] = useState<any>(null);
-  const [orderCart, setOrderCart] = useState<any[]>([{ product_id: "", quantity: "1", sale_price: "" }]);
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
@@ -235,12 +233,18 @@ export default function Home() {
     (sum, e) => sum + Number(e.amount || 0), 0
   );
 
+  const returnedOrders = orders.filter(o => o.status === "returned");
+  const lifetimeReturnFees = returnedOrders.reduce(
+    (sum, o) => sum + Number(o.return_fee || 0), 0
+  );
+
   const lifetimeProfit =
     lifetimeSales -
     lifetimeOrderCosts -
     lifetimeDiscounts -
     lifetimeDeliveryAndCod -
-    lifetimeBusinessExpenses;
+    lifetimeBusinessExpenses -
+    lifetimeReturnFees;
 
   // Monthly P&L: selected month
   const monthlyOrders = delivered.filter(
@@ -266,12 +270,20 @@ export default function Home() {
     (sum, e) => sum + Number(e.amount || 0), 0
   );
 
+  const monthlyReturnedOrders = returnedOrders.filter(
+    o => (o.order_date || "").slice(0, 7) === selectedMonth
+  );
+  const monthlyReturnFees = monthlyReturnedOrders.reduce(
+    (sum, o) => sum + Number(o.return_fee || 0), 0
+  );
+
   const monthlyProfit =
     monthlySales -
     monthlyOrderCosts -
     monthlyDiscounts -
     monthlyDeliveryAndCod -
-    monthlyExpenseTotal;
+    monthlyExpenseTotal -
+    monthlyReturnFees;
 
   const stockValue = products.reduce(
     (sum, p) => sum + Number(p.stock_quantity || 0) * Number(p.purchase_price || 0), 0
@@ -284,8 +296,6 @@ export default function Home() {
     setNotice("");
     setError("");
     setForm(initialForm());
-    setEditing(null);
-    setOrderCart([{ product_id: "", quantity: "1", sale_price: "" }]);
     setShowForm(true);
   }
 
@@ -300,87 +310,79 @@ export default function Home() {
     let result: any;
 
     if (tab === "Products & Stock") {
-      const productPayload = {
+      result = await supabase.from("products").insert({
         name: form.name.trim(),
         sku: form.sku.trim() || null,
         purchase_price: Number(form.purchase_price || 0),
-        // Keep legacy database column compatible; sale price is entered per order now.
         sale_price: 0,
         packaging_cost: Number(form.packaging_cost || 0),
         other_unit_cost: Number(form.other_unit_cost || 0),
         stock_quantity: Number(form.stock_quantity || 0),
         low_stock_limit: Number(form.low_stock_limit || 5)
-      };
-      result = editing?.type === "product"
-        ? await supabase.from("products").update(productPayload).eq("id", editing.id)
-        : await supabase.from("products").insert(productPayload);
+      });
     } else if (tab === "Orders") {
-      const validCart = orderCart.map(row => ({
-        product: products.find(p => p.id === row.product_id && p.active !== false),
-        quantity: Math.floor(Number(row.quantity || 0)),
-        sale_price: Number(row.sale_price || 0)
-      }));
-      if (!validCart.length || validCart.some(row => !row.product || !Number.isFinite(row.quantity) || row.quantity < 1 || !Number.isFinite(row.sale_price) || row.sale_price < 0)) {
-        setError("প্রতিটি পণ্য নির্বাচন করো, Quantity কমপক্ষে ১ এবং Sell Price ০ বা তার বেশি দাও।");
+      const selectedProduct = products.find(
+        p => p.id === form.product_id && p.active !== false
+      );
+      const quantity = Math.floor(Number(form.quantity || 0));
+
+      if (!selectedProduct) {
+        setError("অর্ডারের জন্য আগে একটি পণ্য নির্বাচন করো।");
         setSaving(false);
         return;
       }
-      const orderPayload = {
-        customer_name: form.customer_name.trim(), order_date: form.order_date,
-        status: form.status, delivery_charge: Number(form.delivery_charge || 0),
-        cod_charge: Number(form.cod_charge || 0), discount: Number(form.discount || 0),
+      if (!Number.isFinite(quantity) || quantity < 1) {
+        setError("পণ্যের পরিমাণ কমপক্ষে ১ হতে হবে।");
+        setSaving(false);
+        return;
+      }
+
+      const orderResult = await supabase.from("orders").insert({
+        customer_name: form.customer_name.trim(),
+        order_date: form.order_date,
+        status: form.status,
+        delivery_charge: Number(form.delivery_charge || 0),
+        cod_charge: Number(form.cod_charge || 0),
+        discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
-      };
-      if (editing?.type === "order") {
-        const upd = await supabase.from("orders").update(orderPayload).eq("id", editing.id);
-        if (upd.error) result = upd;
-        else {
-          const delItems = await supabase.from("order_items").delete().eq("order_id", editing.id);
-          if (delItems.error) result = delItems;
-          else {
-            const insItems = await supabase.from("order_items").insert(validCart.map(row => ({
-              order_id: editing.id, product_id: row.product!.id, product_name: row.product!.name,
-              quantity: row.quantity, unit_sale_price: Number(row.sale_price || 0),
-              unit_purchase_cost: Number(row.product!.purchase_price || 0),
-              unit_packaging_cost: Number(row.product!.packaging_cost || 0),
-              unit_other_cost: Number(row.product!.other_unit_cost || 0)
-            })));
-            result = insItems;
-          }
-        }
+      }).select("id").single();
+
+      if (orderResult.error) {
+        result = orderResult;
       } else {
-        const orderResult = await supabase.from("orders").insert(orderPayload).select("id").single();
-        if (orderResult.error) result = orderResult;
-        else {
-          const itemResult = await supabase.from("order_items").insert(validCart.map(row => ({
-            order_id: orderResult.data.id, product_id: row.product!.id, product_name: row.product!.name,
-            quantity: row.quantity, unit_sale_price: Number(row.sale_price || 0),
-            unit_purchase_cost: Number(row.product!.purchase_price || 0),
-            unit_packaging_cost: Number(row.product!.packaging_cost || 0),
-            unit_other_cost: Number(row.product!.other_unit_cost || 0)
-          })));
-          if (itemResult.error) {
-            await supabase.from("orders").delete().eq("id", orderResult.data.id);
-            result = itemResult;
-          } else result = { error: null };
+        const itemResult = await supabase.from("order_items").insert({
+          order_id: orderResult.data.id,
+          product_id: selectedProduct.id,
+          product_name: selectedProduct.name,
+          quantity,
+          unit_sale_price: Number(form.sale_price || 0),
+          unit_purchase_cost: Number(selectedProduct.purchase_price || 0),
+          unit_packaging_cost: Number(selectedProduct.packaging_cost || 0),
+          unit_other_cost: Number(selectedProduct.other_unit_cost || 0)
+        });
+
+        if (itemResult.error) {
+          // Avoid leaving an order without its product line if item saving fails.
+          await supabase.from("orders").delete().eq("id", orderResult.data.id);
+          result = itemResult;
+        } else {
+          result = { error: null };
         }
       }
     } else {
-      const expensePayload = {
-        expense_date: form.expense_date, category: form.category,
-        description: form.description.trim() || null, amount: Number(form.amount),
+      result = await supabase.from("expenses").insert({
+        expense_date: form.expense_date,
+        category: form.category,
+        description: form.description.trim() || null,
+        amount: Number(form.amount),
         payment_method: "cash"
-      };
-      result = editing?.type === "expense"
-        ? await supabase.from("expenses").update(expensePayload).eq("id", editing.id)
-        : await supabase.from("expenses").insert(expensePayload);
+      });
     }
 
     if (result.error) {
       setError(result.error.message);
     } else {
-      setNotice(editing ? "রেকর্ড আপডেট হয়েছে।" : "রেকর্ড সফলভাবে যোগ হয়েছে।");
-      setEditing(null);
+      setNotice("রেকর্ড সফলভাবে যোগ হয়েছে।");
       setShowForm(false);
       await load();
     }
@@ -388,81 +390,53 @@ export default function Home() {
     setSaving(false);
   }
 
-  async function deleteRecord(type: "product" | "order" | "expense", id: string) {
-    if (!supabase || !confirm("এই তথ্যটি Delete করতে চান?")) return;
-    setError(""); setNotice("");
-    let r: any;
-    if (type === "product") r = await supabase.from("products").delete().eq("id", id);
-    else if (type === "expense") r = await supabase.from("expenses").delete().eq("id", id);
-    else {
-      const ir = await supabase.from("order_items").delete().eq("order_id", id);
-      if (ir.error) { setError(ir.error.message); return; }
-      r = await supabase.from("orders").delete().eq("id", id);
+  async function changeStatus(order: Order, status: string) {
+    if (!supabase) return;
+
+    let returnFee = Number(order.return_fee || 0);
+    if (status === "returned") {
+      const answer = window.prompt(
+        "Return/Courier fee কত টাকা? (না থাকলে 0 লিখুন)",
+        String(returnFee)
+      );
+      if (answer === null) return;
+      returnFee = Number(answer);
+      if (!Number.isFinite(returnFee) || returnFee < 0) {
+        setError("Return fee সঠিকভাবে লিখুন।");
+        return;
+      }
     }
-    if (r.error) setError("Delete করা যায়নি: " + r.error.message);
-    else { setNotice("তথ্য Delete হয়েছে।"); await load(); }
-  }
 
-  function editRecord(type: "product" | "order" | "expense", record: any) {
-    setError(""); setNotice(""); setEditing({ type, id: record.id });
-    if (type === "product") setForm({ ...initialForm(), ...record,
-      purchase_price: String(record.purchase_price ?? 0), sale_price: String(record.sale_price ?? 0),
-      packaging_cost: String(record.packaging_cost ?? 0), other_unit_cost: String(record.other_unit_cost ?? 0),
-      stock_quantity: String(record.stock_quantity ?? 0), low_stock_limit: String(record.low_stock_limit ?? 5) });
-    else if (type === "expense") setForm({ ...initialForm(), ...record,
-      amount: String(record.amount ?? 0), description: record.description || "" });
-    else {
-      setForm({ ...initialForm(), ...record, customer_name: record.customer_name || "",
-        delivery_charge: String(record.delivery_charge ?? 0), cod_charge: String(record.cod_charge ?? 0),
-        discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
-      const existing = items.filter(it => it.order_id === record.id);
-      setOrderCart(existing.length ? existing.map(it => ({ product_id: it.product_id || "", quantity: String(it.quantity || 1), sale_price: String(it.unit_sale_price ?? 0) })) : [{ product_id: "", quantity: "1", sale_price: "" }]);
-    }
-    setShowForm(true);
-  }
-
-async function changeStatus(order: Order, status: string) {
-  if (!supabase) return;
-
-  setError("");
-  setNotice("");
-
-  try {
-    const { error } = await supabase.rpc(
-      "set_order_status_stock",
-      {
+    setError("");
+    setNotice("");
+    try {
+      const { error } = await supabase.rpc("set_order_status_stock", {
         p_order_id: order.id,
         p_status: status,
-        p_return_fee: 0
+        p_return_fee: returnFee
+      });
+      if (error) {
+        setError("স্ট্যাটাস পরিবর্তন হয়নি: " + error.message);
+        return;
       }
-    );
-
-    if (error) {
-      setError("স্ট্যাটাস পরিবর্তন হয়নি: " + error.message);
-      return;
+      setNotice("অর্ডারের স্ট্যাটাস ও স্টক আপডেট হয়েছে।");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "অর্ডার আপডেট করা যায়নি।");
     }
-
-    setNotice("অর্ডারের স্ট্যাটাস ও স্টক আপডেট হয়েছে।");
-    await load();
-  } catch (err) {
-    setError(
-      err instanceof Error
-        ? err.message
-        : "স্ট্যাটাস আপডেট করা যায়নি।"
-    );
   }
-}
+
   function exportCsv() {
     const rows =
       tab === "Products & Stock"
-        ? products.map(p => [p.name, p.sku || "", p.stock_quantity, p.purchase_price])
+        ? products.map(p => [p.name, p.sku || "", p.stock_quantity, p.purchase_price, p.sale_price])
         : tab === "Orders"
           ? orders.map(o => [o.order_number, o.customer_name, o.order_date, o.status, o.amount_paid])
           : expenses.map(e => [e.expense_date, e.category, e.description || "", e.amount]);
 
     const header =
       tab === "Products & Stock"
-        ? ["Product", "SKU", "Stock", "Purchase price"]
+        ? ["Product", "SKU", "Stock", "Purchase price", "Sale price"]
         : tab === "Orders"
           ? ["Order no", "Customer", "Date", "Status", "Paid"]
           : ["Date", "Category", "Description", "Amount"];
@@ -624,6 +598,7 @@ async function changeStatus(order: Order, status: string) {
                 <div className="status-row"><span>Discounts</span><b>− {money(lifetimeDiscounts)}</b></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(lifetimeDeliveryAndCod)}</b></div>
                 <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(lifetimeBusinessExpenses)}</b></div>
+                <div className="status-row"><span>Return fees</span><b>− {money(lifetimeReturnFees)}</b></div>
                 <div className="status-row"><strong>Lifetime Net Profit / Loss</strong><strong>{money(lifetimeProfit)}</strong></div>
               </div>
             </div>
@@ -654,6 +629,7 @@ async function changeStatus(order: Order, status: string) {
                 <div className="status-row"><span>Discounts</span><b>− {money(monthlyDiscounts)}</b></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(monthlyDeliveryAndCod)}</b></div>
                 <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(monthlyExpenseTotal)}</b></div>
+                <div className="status-row"><span>Return fees</span><b>− {money(monthlyReturnFees)}</b></div>
                 <div className="status-row"><strong>Monthly Net Profit / Loss</strong><strong>{money(monthlyProfit)}</strong></div>
               </div>
             </div>
@@ -693,7 +669,7 @@ async function changeStatus(order: Order, status: string) {
               <div className="panel-title"><div><h3>Recent orders</h3><p>সর্বশেষ যোগ করা অর্ডার</p></div>
                 <button className="text-btn" onClick={() => setTab("Orders")}>সব অর্ডার <ArrowUpRight size={15} /></button>
               </div>
-              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
+              <OrdersTable orders={orders.slice(0, 5)} changeStatus={changeStatus} items={items} />
             </div>
           </div>
         )}
@@ -703,7 +679,7 @@ async function changeStatus(order: Order, status: string) {
             <div className="section-heading">
               <div>
                 <h3>{tab === "Products & Stock" ? "পণ্য ও স্টক ম্যানেজমেন্ট" : tab === "Orders" ? "অর্ডার ম্যানেজমেন্ট" : "ব্যবসার খরচ"}</h3>
-                <p>{tab === "Products & Stock" ? "ক্রয়মূল্য, বিক্রয়মূল্য এবং স্টক রাখুন" : tab === "Orders" ? "অর্ডার ও ডেলিভারি স্ট্যাটাস ট্র্যাক করুন" : "বিজ্ঞাপন, প্যাকেজিং ও অন্যান্য খরচ যোগ করুন"}</p>
+                <p>{tab === "Products & Stock" ? "ক্রয়মূল্য ও স্টক রাখুন; বিক্রয়মূল্য অর্ডারে লিখুন" : tab === "Orders" ? "অর্ডার ও ডেলিভারি স্ট্যাটাস ট্র্যাক করুন" : "বিজ্ঞাপন, প্যাকেজিং ও অন্যান্য খরচ যোগ করুন"}</p>
               </div>
               <div className="row-actions">
                 <button className="btn secondary" onClick={exportCsv}><Download size={15} /> Export CSV</button>
@@ -714,8 +690,8 @@ async function changeStatus(order: Order, status: string) {
             {showForm && (
               <form className="panel form-panel" onSubmit={saveRecord}>
                 <div className="panel-title">
-                  <div><h3>{editing ? "তথ্য Edit করুন" : `নতুন ${tab === "Products & Stock" ? "পণ্য" : tab === "Orders" ? "অর্ডার" : "খরচ"} যোগ করুন`}</h3><p>প্রয়োজনীয় তথ্য পূরণ করুন</p></div>
-                  <button type="button" className="icon-btn" onClick={() => { setShowForm(false); setEditing(null); }}><X size={17} /></button>
+                  <div><h3>নতুন {tab === "Products & Stock" ? "পণ্য" : tab === "Orders" ? "অর্ডার" : "খরচ"} যোগ করুন</h3><p>প্রয়োজনীয় তথ্য পূরণ করুন</p></div>
+                  <button type="button" className="icon-btn" onClick={() => setShowForm(false)}><X size={17} /></button>
                 </div>
 
                 {tab === "Products & Stock" && (
@@ -734,25 +710,16 @@ async function changeStatus(order: Order, status: string) {
                   <div className="form-grid">
                     <Field label="Customer name *" value={form.customer_name} onChange={v => setForm({ ...form, customer_name: v })} required />
                     <Field label="Order date" type="date" value={form.order_date} onChange={v => setForm({ ...form, order_date: v })} />
-                    <div style={{ gridColumn: "1 / -1" }}>
-                      <b>অর্ডারের পণ্যসমূহ</b>
-                      {orderCart.map((row, idx) => {
-                        const prod = products.find(p => p.id === row.product_id);
-                        return <div key={idx} className="form-grid" style={{ marginTop: 10, padding: 12, border: "1px solid #eee", borderRadius: 10 }}>
-                          <label className="field"><span>Product *</span>
-                            <select value={row.product_id} onChange={e => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, product_id: e.target.value } : r))} required>
-                              <option value="">পণ্য নির্বাচন করো</option>
-                              {products.filter(p => p.active !== false).map(p => <option key={p.id} value={p.id}>{p.name} — ক্রয় {money(p.purchase_price)}</option>)}
-                            </select>
-                          </label>
-                          <Field label="Quantity *" type="number" value={row.quantity} onChange={v => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, quantity: v } : r))} required />
-                          <Field label="এই অর্ডারের Sell Price (প্রতি পিস ৳) *" type="number" value={row.sale_price ?? ""} onChange={v => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, sale_price: v } : r))} required />
-                          <div style={{ alignSelf: "end" }}><b>মোট: {money(Number(row.sale_price || 0) * Number(row.quantity || 0))}</b> <button type="button" className="btn secondary" onClick={() => setOrderCart(cart => cart.filter((_, i) => i !== idx))} disabled={orderCart.length === 1}>Remove</button></div>
-                        </div>;
-                      })}
-                      <button type="button" className="btn secondary" style={{ marginTop: 10 }} onClick={() => setOrderCart(cart => [...cart, { product_id: "", quantity: "1", sale_price: "" }])}><Plus size={15}/> আরও পণ্য যোগ করুন</button>
-                      <p className="footnote">প্রতিটি অর্ডারে আলাদা Sell Price লিখবে। মোট বিক্রয়মূল্য = Quantity × Sell Price। Amount Paid-এ বাস্তবে পাওয়া টাকা লিখবে।</p>
-                    </div>
+                    <label className="field"><span>Product *</span>
+                      <select value={form.product_id} onChange={e => setForm({ ...form, product_id: e.target.value })} required>
+                        <option value="">পণ্য নির্বাচন করো</option>
+                        {products.filter(p => p.active !== false).map(p => (
+                          <option key={p.id} value={p.id}>{p.name} — {money(p.sale_price)}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <Field label="Quantity *" type="number" value={form.quantity} onChange={v => setForm({ ...form, quantity: v })} required />
+                    <Field label="Sale price per unit (৳) *" type="number" value={form.sale_price} onChange={v => setForm({ ...form, sale_price: v })} required />
                     <label className="field"><span>Status</span>
                       <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
                         {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
@@ -782,8 +749,8 @@ async function changeStatus(order: Order, status: string) {
                 )}
 
                 <div className="form-footer">
-                  <button type="button" className="btn secondary" onClick={() => { setShowForm(false); setEditing(null); }}>Cancel</button>
-                  <button className="btn primary" disabled={saving}>{saving ? "Saving..." : editing ? "Update record" : "Save record"}</button>
+                  <button type="button" className="btn secondary" onClick={() => setShowForm(false)}>Cancel</button>
+                  <button className="btn primary" disabled={saving}>{saving ? "Saving..." : "Save record"}</button>
                 </div>
               </form>
             )}
@@ -791,28 +758,28 @@ async function changeStatus(order: Order, status: string) {
             {loading ? <div className="panel empty-state">লোড হচ্ছে...</div> :
               tab === "Products & Stock" ? (
                 <div className="panel table-panel">
-                  <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase price</th><th>Unit cost*</th><th>Actions</th></tr></thead>
+                  <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase</th><th>Sale</th><th>Unit margin*</th></tr></thead>
                     <tbody>{products.map(p => <tr key={p.id}>
                       <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
                       <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
-                      <td>{money(p.purchase_price)}</td>
-                      <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button></td>
+                      <td>{money(p.purchase_price)}</td><td>{money(p.sale_price)}</td>
+                      <td>{money(Number(p.sale_price) - Number(p.purchase_price) - Number(p.packaging_cost) - Number(p.other_unit_cost))}</td>
                     </tr>)}</tbody>
                   </table>
                   {products.length === 0 && <div className="empty-state">এখনো কোনো পণ্য যোগ করা হয়নি। Add Product চাপুন।</div>}
-                  <p className="footnote">* প্রতি ইউনিটের আনুমানিক মোট খরচ (ক্রয় + প্যাকেজিং + অন্যান্য খরচ)।</p>
+                  <p className="footnote">* আনুমানিক unit margin; বিজ্ঞাপন ও অন্যান্য ব্যবসায়িক খরচ বাদ দেওয়ার আগের হিসাব।</p>
                 </div>
               ) : tab === "Orders" ? (
                 <div className="panel table-panel">
-                  <OrdersTable orders={orders} changeStatus={changeStatus} editRecord={editRecord} deleteRecord={deleteRecord} />
+                  <OrdersTable orders={orders} changeStatus={changeStatus} items={items} />
                   {orders.length === 0 && <div className="empty-state">এখনো কোনো অর্ডার নেই। Add Order চাপুন।</div>}
-                  <p className="footnote">একটি অর্ডারে একাধিক পণ্য যোগ করা যায়। Amount Paid-এ পাওয়া টাকা সংরক্ষিত থাকে।</p>
+                  <p className="footnote">নতুন অর্ডারে একটি পণ্য ও তার পরিমাণ সেভ হয়। এক অর্ডারে একাধিক পণ্য যোগ করার ব্যবস্থা এই সংস্করণে নেই। আগের অর্ডারগুলোর order_items তথ্য না থাকলে পুরোনো লাভের হিসাব অসম্পূর্ণ হতে পারে।</p>
                 </div>
               ) : (
                 <div className="panel table-panel">
-                  <table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th><th>Actions</th></tr></thead>
+                  <table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th></tr></thead>
                     <tbody>{expenses.map(e => <tr key={e.id}>
-                      <td>{e.expense_date}</td><td>{e.category}</td><td>{e.description || "—"}</td><td className="amount">{money(e.amount)}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("expense", e)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("expense", e.id)}><Trash2 size={15}/></button></td>
+                      <td>{e.expense_date}</td><td>{e.category}</td><td>{e.description || "—"}</td><td className="amount">{money(e.amount)}</td>
                     </tr>)}</tbody>
                   </table>
                   {expenses.length === 0 && <div className="empty-state">এখনো কোনো খরচ যোগ করা হয়নি।</div>}
@@ -850,21 +817,54 @@ function Field({ label, value, onChange, type = "text", required = false }: {
   </label>;
 }
 
-function OrdersTable({ orders, changeStatus, editRecord, deleteRecord }: {
-  orders: Order[]; changeStatus: (o: Order, s: string) => void;
-  editRecord: (type: "product" | "order" | "expense", record: any) => void;
-  deleteRecord: (type: "product" | "order" | "expense", id: string) => void;
+function OrdersTable({
+  orders,
+  changeStatus,
+  items
+}: {
+  orders: Order[];
+  changeStatus: (o: Order, s: string) => void;
+  items: any[];
 }) {
+  function getOrderProfit(order: Order): number | null {
+    const orderItems = items.filter(item => item.order_id === order.id);
+    const revenue = orderItems.reduce(
+      (sum, item) => sum + Number(item.quantity || 0) * Number(item.unit_sale_price || 0),
+      0
+    );
+    const productCost = orderItems.reduce(
+      (sum, item) => sum + Number(item.quantity || 0) * (
+        Number(item.unit_purchase_cost || 0) +
+        Number(item.unit_packaging_cost || 0) +
+        Number(item.unit_other_cost || 0)
+      ),
+      0
+    );
+
+    if (order.status === "returned") {
+      return -(Number(order.return_fee || 0) + Number(order.delivery_charge || 0) + Number(order.cod_charge || 0));
+    }
+    if (order.status !== "delivered") return null;
+    return revenue - productCost - Number(order.discount || 0) - Number(order.delivery_charge || 0) - Number(order.cod_charge || 0);
+  }
+
   return <div className="table-scroll">
-    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
-      <tbody>{orders.map(o => <tr key={o.id}>
-        <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
-        <td><select className={`status-select ${o.status}`} value={o.status}
-          onChange={e => changeStatus(o, e.target.value)}>
-          {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
-        </select></td>
-        <td>{money(o.amount_paid)}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("order", o)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("order", o.id)}><Trash2 size={15}/></button></td>
-      </tr>)}</tbody>
+    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Status</th><th>Paid</th><th>Profit / Loss</th></tr></thead>
+      <tbody>{orders.map(o => {
+        const profit = getOrderProfit(o);
+        return <tr key={o.id}>
+          <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
+          <td>
+            <select className={`status-select ${o.status}`} value={o.status}
+              onChange={e => changeStatus(o, e.target.value)}>
+              {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            {o.status === "returned" && <small style={{ display: "block", marginTop: 4 }}>Return fee: {money(Number(o.return_fee || 0))}</small>}
+          </td>
+          <td>{money(o.amount_paid)}</td>
+          <td>{profit === null ? "—" : <b style={{ color: profit < 0 ? "#c62828" : "#16803c" }}>{profit < 0 ? "−" : ""}{money(Math.abs(profit))}</b>}</td>
+        </tr>;
+      })}</tbody>
     </table>
   </div>;
 }
