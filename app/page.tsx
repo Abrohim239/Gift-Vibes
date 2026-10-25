@@ -735,11 +735,20 @@ export default function Home() {
                           </label>
                           <Field label="Quantity *" type="number" value={row.quantity} onChange={v => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, quantity: v } : r))} required />
                           <Field label="এই অর্ডারের Sell Price (প্রতি পিস ৳) *" type="number" value={row.sale_price ?? ""} onChange={v => setOrderCart(cart => cart.map((r, i) => i === idx ? { ...r, sale_price: v } : r))} required />
-                          <div style={{ alignSelf: "end" }}><b>মোট: {money(Number(row.sale_price || 0) * Number(row.quantity || 0))}</b> <button type="button" className="btn secondary" onClick={() => setOrderCart(cart => cart.filter((_, i) => i !== idx))} disabled={orderCart.length === 1}>Remove</button></div>
+                          <div style={{ gridColumn: "1 / -1", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 8, padding: 10 }}>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 16 }}>
+                              <span>Buy Price: <b>{money(Number(prod?.purchase_price || 0))}</b></span>
+                              <span>Packaging: <b>{money(Number(prod?.packaging_cost || 0))}</b></span>
+                              {Number(prod?.other_unit_cost || 0) > 0 && <span>Other Cost: <b>{money(Number(prod?.other_unit_cost || 0))}</b></span>}
+                              <span>মোট খরচ/পিস: <b>{money(Number(prod?.purchase_price || 0) + Number(prod?.packaging_cost || 0) + Number(prod?.other_unit_cost || 0))}</b></span>
+                              <span>এই পণ্যের মোট খরচ: <b>{money((Number(prod?.purchase_price || 0) + Number(prod?.packaging_cost || 0) + Number(prod?.other_unit_cost || 0)) * Number(row.quantity || 0))}</b></span>
+                            </div>
+                          </div>
+                          <div style={{ alignSelf: "end" }}><b>মোট বিক্রয়: {money(Number(row.sale_price || 0) * Number(row.quantity || 0))}</b> <button type="button" className="btn secondary" onClick={() => setOrderCart(cart => cart.filter((_, i) => i !== idx))} disabled={orderCart.length === 1}>Remove</button></div>
                         </div>;
                       })}
                       <button type="button" className="btn secondary" style={{ marginTop: 10 }} onClick={() => setOrderCart(cart => [...cart, { product_id: "", quantity: "1", sale_price: "" }])}><Plus size={15}/> আরও পণ্য যোগ করুন</button>
-                      <p className="footnote">প্রতিটি অর্ডারে আলাদা Sell Price লিখবে। মোট বিক্রয়মূল্য = Quantity × Sell Price। Amount Paid-এ বাস্তবে পাওয়া টাকা লিখবে।</p>
+                      <p className="footnote">Buy Price + Packaging Cost + Other Cost = প্রতি পিসের মোট খরচ। প্রতিটি অর্ডারে আলাদা Sell Price লিখবে। মোট বিক্রয়মূল্য = Quantity × Sell Price। Amount Paid-এ বাস্তবে পাওয়া টাকা লিখবে।</p>
                     </div>
                     <label className="field"><span>Status</span>
                       <select value={form.status} onChange={e => setForm({ ...form, status: e.target.value })}>
