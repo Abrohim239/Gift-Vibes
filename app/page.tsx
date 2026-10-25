@@ -421,21 +421,37 @@ export default function Home() {
     setShowForm(true);
   }
 
-  async function changeStatus(order: Order, status: string) {
-    if (!supabase) return;
+async function changeStatus(order: Order, status: string) {
+  if (!supabase) return;
 
-    const { error } = await supabase
-      .from("orders")
-      .update({ status })
-      .eq("id", order.id);
+  setError("");
+  setNotice("");
 
-    if (error) setError(error.message);
-    else {
-      setNotice("অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
-      await load();
+  try {
+    const { error } = await supabase.rpc(
+      "set_order_status_stock",
+      {
+        p_order_id: order.id,
+        p_status: status,
+        p_return_fee: 0
+      }
+    );
+
+    if (error) {
+      setError("স্ট্যাটাস পরিবর্তন হয়নি: " + error.message);
+      return;
     }
-  }
 
+    setNotice("অর্ডারের স্ট্যাটাস ও স্টক আপডেট হয়েছে।");
+    await load();
+  } catch (err) {
+    setError(
+      err instanceof Error
+        ? err.message
+        : "স্ট্যাটাস আপডেট করা যায়নি।"
+    );
+  }
+}
   function exportCsv() {
     const rows =
       tab === "Products & Stock"
