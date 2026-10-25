@@ -17,7 +17,7 @@ type Product = {
 type Order = {
   id: string; order_number: number; customer_name: string; order_date: string;
   status: string; delivery_charge: number; cod_charge: number;
-  discount: number; amount_paid: number;
+  return_courier_loss: number; discount: number; amount_paid: number;
 };
 type Expense = {
   id: string; expense_date: string; category: string;
@@ -38,7 +38,7 @@ const initialForm = () => ({
   packaging_cost: "0", other_unit_cost: "0", stock_quantity: "0",
   low_stock_limit: "5", customer_name: "", order_date: today(),
   status: "pending", delivery_charge: "0", cod_charge: "0",
-  discount: "0", amount_paid: "0", product_id: "", quantity: "1",
+  return_courier_loss: "0", discount: "0", amount_paid: "0", product_id: "", quantity: "1",
   category: "Facebook Ads", expense_date: today(), description: "", amount: ""
 });
 
@@ -328,7 +328,8 @@ export default function Home() {
       const orderPayload = {
         customer_name: String(form.customer_name ?? "").trim(), order_date: form.order_date,
         status: form.status, delivery_charge: Number(form.delivery_charge || 0),
-        cod_charge: Number(form.cod_charge || 0), discount: Number(form.discount || 0),
+        cod_charge: Number(form.cod_charge || 0),
+        return_courier_loss: Number(form.return_courier_loss || 0), discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
       };
       if (editing?.type === "order") {
@@ -418,7 +419,7 @@ export default function Home() {
     else {
       setForm({ ...initialForm(), ...record, customer_name: record.customer_name || "",
         delivery_charge: String(record.delivery_charge ?? 0), cod_charge: String(record.cod_charge ?? 0),
-        discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
+        return_courier_loss: String(record.return_courier_loss ?? 0), discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
       const existing = items.filter(it => it.order_id === record.id);
       setOrderCart(existing.length ? existing.map(it => ({ product_id: it.product_id || "", quantity: String(it.quantity || 1), sale_price: String(it.unit_sale_price ?? 0) })) : [{ product_id: "", quantity: "1", sale_price: "" }]);
     }
@@ -772,6 +773,7 @@ export default function Home() {
                     </label>
                     <Field label="Delivery charge (৳)" type="number" value={form.delivery_charge} onChange={v => setForm({ ...form, delivery_charge: v })} />
                     <Field label="COD charge (৳)" type="number" value={form.cod_charge} onChange={v => setForm({ ...form, cod_charge: v })} />
+                    <Field label="Return courier loss (৳)" type="number" value={form.return_courier_loss} onChange={v => setForm({ ...form, return_courier_loss: v })} />
                     <Field label="Discount (৳)" type="number" value={form.discount} onChange={v => setForm({ ...form, discount: v })} />
                     <Field label="Amount paid (৳)" type="number" value={form.amount_paid} onChange={v => setForm({ ...form, amount_paid: v })} />
                   </div>
@@ -873,7 +875,11 @@ function OrdersTable({ orders, itemTotals, changeStatus, editRecord, deleteRecor
     <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
       <tbody>{orders.map(o => {
         const totals = itemTotals[o.id] || { revenue: 0, cost: 0 };
-        const profit = totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
+        const profit = o.status === "returned"
+          ? -Number(o.return_courier_loss || 0)
+          : o.status === "cancelled"
+            ? 0
+            : totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
         return <tr key={o.id}>
           <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
           <td><b>{money(totals.revenue)}</b></td>
