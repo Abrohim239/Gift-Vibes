@@ -427,16 +427,23 @@ export default function Home() {
   }
 
   async function changeStatus(order: Order, status: string) {
-    if (!supabase) return;
+    if (!supabase || order.status === status) return;
 
-    const { error } = await supabase
-      .from("orders")
-      .update({ status })
-      .eq("id", order.id);
+    setError("");
+    setNotice("");
+    const { error } = await supabase.rpc("update_order_status_and_stock", {
+      p_order_id: order.id,
+      p_status: status
+    });
 
-    if (error) setError(error.message);
-    else {
-      setNotice("অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
+    if (error) {
+      setError("অর্ডারের স্ট্যাটাস/স্টক আপডেট হয়নি: " + error.message);
+    } else {
+      setNotice(status === "delivered"
+        ? "অর্ডার Complete হয়েছে এবং পণ্যের স্টক কমানো হয়েছে।"
+        : status === "returned"
+          ? "অর্ডার Returned হয়েছে। স্টকে কোনো পণ্য অটোমেটিক যোগ করা হয়নি।"
+          : "অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
       await load();
     }
   }
