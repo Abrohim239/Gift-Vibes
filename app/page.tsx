@@ -17,7 +17,7 @@ type Product = {
 type Order = {
   id: string; order_number: number; customer_name: string; order_date: string;
   status: string; delivery_charge: number; cod_charge: number;
-  return_courier_loss: number; discount: number; amount_paid: number;
+  discount: number; amount_paid: number;
 };
 type Expense = {
   id: string; expense_date: string; category: string;
@@ -38,7 +38,7 @@ const initialForm = () => ({
   packaging_cost: "0", other_unit_cost: "0", stock_quantity: "0",
   low_stock_limit: "5", customer_name: "", order_date: today(),
   status: "pending", delivery_charge: "0", cod_charge: "0",
-  return_courier_loss: "0", discount: "0", amount_paid: "0", product_id: "", quantity: "1",
+  discount: "0", amount_paid: "0", product_id: "", quantity: "1",
   category: "Facebook Ads", expense_date: today(), description: "", amount: ""
 });
 
@@ -235,6 +235,8 @@ export default function Home() {
     (sum, e) => sum + Number(e.amount || 0), 0
   );
 
+  const lifetimeGrossProfit = lifetimeSales - lifetimeOrderCosts - lifetimeDiscounts;
+
   const lifetimeProfit =
     lifetimeSales -
     lifetimeOrderCosts -
@@ -265,6 +267,8 @@ export default function Home() {
   const monthlyExpenseTotal = monthlyExpenses.reduce(
     (sum, e) => sum + Number(e.amount || 0), 0
   );
+
+  const monthlyGrossProfit = monthlySales - monthlyOrderCosts - monthlyDiscounts;
 
   const monthlyProfit =
     monthlySales -
@@ -328,8 +332,7 @@ export default function Home() {
       const orderPayload = {
         customer_name: String(form.customer_name ?? "").trim(), order_date: form.order_date,
         status: form.status, delivery_charge: Number(form.delivery_charge || 0),
-        cod_charge: Number(form.cod_charge || 0),
-        return_courier_loss: Number(form.return_courier_loss || 0), discount: Number(form.discount || 0),
+        cod_charge: Number(form.cod_charge || 0), discount: Number(form.discount || 0),
         amount_paid: Number(form.amount_paid || 0)
       };
       if (editing?.type === "order") {
@@ -419,7 +422,7 @@ export default function Home() {
     else {
       setForm({ ...initialForm(), ...record, customer_name: record.customer_name || "",
         delivery_charge: String(record.delivery_charge ?? 0), cod_charge: String(record.cod_charge ?? 0),
-        return_courier_loss: String(record.return_courier_loss ?? 0), discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
+        discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
       const existing = items.filter(it => it.order_id === record.id);
       setOrderCart(existing.length ? existing.map(it => ({ product_id: it.product_id || "", quantity: String(it.quantity || 1), sale_price: String(it.unit_sale_price ?? 0) })) : [{ product_id: "", quantity: "1", sale_price: "" }]);
     }
@@ -427,23 +430,16 @@ export default function Home() {
   }
 
   async function changeStatus(order: Order, status: string) {
-    if (!supabase || order.status === status) return;
+    if (!supabase) return;
 
-    setError("");
-    setNotice("");
-    const { error } = await supabase.rpc("update_order_status_and_stock", {
-      p_order_id: order.id,
-      p_status: status
-    });
+    const { error } = await supabase
+      .from("orders")
+      .update({ status })
+      .eq("id", order.id);
 
-    if (error) {
-      setError("অর্ডারের স্ট্যাটাস/স্টক আপডেট হয়নি: " + error.message);
-    } else {
-      setNotice(status === "delivered"
-        ? "অর্ডার Complete হয়েছে এবং পণ্যের স্টক কমানো হয়েছে।"
-        : status === "returned"
-          ? "অর্ডার Returned হয়েছে। স্টকে কোনো পণ্য অটোমেটিক যোগ করা হয়নি।"
-          : "অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
+    if (error) setError(error.message);
+    else {
+      setNotice("অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
       await load();
     }
   }
@@ -606,6 +602,7 @@ export default function Home() {
               <Stat title="Lifetime Sales" value={money(lifetimeSales)} detail={`${delivered.length} delivered orders`} tone="purple" />
               <Stat title="Order Product Cost" value={money(lifetimeOrderCosts)} detail="ক্রয় + প্যাকেজিং + অন্যান্য ইউনিট খরচ" tone="orange" />
               <Stat title="Business Expenses" value={money(lifetimeBusinessExpenses)} detail={`${overheadExpenses.length} overhead entries`} tone="blue" />
+              <Stat title="Lifetime Gross Profit / Loss" value={money(lifetimeGrossProfit)} detail="Sales − Product Cost − Discount" tone={lifetimeGrossProfit >= 0 ? "green" : "red"} />
               <Stat title="Lifetime Net Profit / Loss" value={money(lifetimeProfit)} detail={lifetimeProfit >= 0 ? "নিট লাভ" : "নিট লোকসান"} tone={lifetimeProfit >= 0 ? "green" : "red"} />
             </div>
 
@@ -618,6 +615,7 @@ export default function Home() {
                 <div className="status-row"><span>Delivered sales</span><b>{money(lifetimeSales)}</b></div>
                 <div className="status-row"><span>Product costs</span><b>− {money(lifetimeOrderCosts)}</b></div>
                 <div className="status-row"><span>Discounts</span><b>− {money(lifetimeDiscounts)}</b></div>
+                <div className="status-row"><strong>Lifetime Gross Profit / Loss</strong><strong>{money(lifetimeGrossProfit)}</strong></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(lifetimeDeliveryAndCod)}</b></div>
                 <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(lifetimeBusinessExpenses)}</b></div>
                 <div className="status-row"><strong>Lifetime Net Profit / Loss</strong><strong>{money(lifetimeProfit)}</strong></div>
@@ -636,6 +634,7 @@ export default function Home() {
               <Stat title="Monthly Sales" value={money(monthlySales)} detail={`${monthlyOrders.length} delivered orders`} tone="purple" />
               <Stat title="Monthly Product Cost" value={money(monthlyOrderCosts)} detail="পণ্যের মোট ইউনিট খরচ" tone="orange" />
               <Stat title="Monthly Expenses" value={money(monthlyExpenseTotal)} detail={`${monthlyExpenses.length} overhead entries`} tone="blue" />
+              <Stat title="Monthly Gross Profit / Loss" value={money(monthlyGrossProfit)} detail="Sales − Product Cost − Discount" tone={monthlyGrossProfit >= 0 ? "green" : "red"} />
               <Stat title="Monthly Net Profit / Loss" value={money(monthlyProfit)} detail={monthlyProfit >= 0 ? "নির্বাচিত মাসে নিট লাভ" : "নির্বাচিত মাসে নিট লোকসান"} tone={monthlyProfit >= 0 ? "green" : "red"} />
             </div>
 
@@ -648,6 +647,7 @@ export default function Home() {
                 <div className="status-row"><span>Delivered sales</span><b>{money(monthlySales)}</b></div>
                 <div className="status-row"><span>Product costs</span><b>− {money(monthlyOrderCosts)}</b></div>
                 <div className="status-row"><span>Discounts</span><b>− {money(monthlyDiscounts)}</b></div>
+                <div className="status-row"><strong>Monthly Gross Profit / Loss</strong><strong>{money(monthlyGrossProfit)}</strong></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(monthlyDeliveryAndCod)}</b></div>
                 <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(monthlyExpenseTotal)}</b></div>
                 <div className="status-row"><strong>Monthly Net Profit / Loss</strong><strong>{money(monthlyProfit)}</strong></div>
@@ -780,7 +780,6 @@ export default function Home() {
                     </label>
                     <Field label="Delivery charge (৳)" type="number" value={form.delivery_charge} onChange={v => setForm({ ...form, delivery_charge: v })} />
                     <Field label="COD charge (৳)" type="number" value={form.cod_charge} onChange={v => setForm({ ...form, cod_charge: v })} />
-                    <Field label="Return courier loss (৳)" type="number" value={form.return_courier_loss} onChange={v => setForm({ ...form, return_courier_loss: v })} />
                     <Field label="Discount (৳)" type="number" value={form.discount} onChange={v => setForm({ ...form, discount: v })} />
                     <Field label="Amount paid (৳)" type="number" value={form.amount_paid} onChange={v => setForm({ ...form, amount_paid: v })} />
                   </div>
@@ -882,11 +881,7 @@ function OrdersTable({ orders, itemTotals, changeStatus, editRecord, deleteRecor
     <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
       <tbody>{orders.map(o => {
         const totals = itemTotals[o.id] || { revenue: 0, cost: 0 };
-        const profit = o.status === "returned"
-          ? -Number(o.return_courier_loss || 0)
-          : o.status === "cancelled"
-            ? 0
-            : totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
+        const profit = totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
         return <tr key={o.id}>
           <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
           <td><b>{money(totals.revenue)}</b></td>
