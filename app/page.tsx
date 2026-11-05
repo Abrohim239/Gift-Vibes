@@ -888,7 +888,7 @@ function OrdersTable({ orders, itemTotals, changeStatus, editRecord, deleteRecor
   deleteRecord: (type: "product" | "order" | "expense", id: string) => void;
 }) {
   return <div className="table-scroll">
-    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Return Courier Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
+    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
       <tbody>{orders.map(o => {
         const totals = itemTotals[o.id] || { revenue: 0, cost: 0 };
         const profit = o.status === "returned" ? -Number(o.return_courier_loss || 0) : totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
@@ -896,7 +896,6 @@ function OrdersTable({ orders, itemTotals, changeStatus, editRecord, deleteRecor
           <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
           <td><b>{money(totals.revenue)}</b></td>
           <td><b style={{ color: profit < 0 ? "#dc2626" : "#15803d" }}>{profit < 0 ? "ক্ষতি " : "লাভ "}{money(Math.abs(profit))}</b></td>
-          <td>{o.status === "returned" ? <b style={{ color: "#dc2626" }}>{money(o.return_courier_loss || 0)}</b> : "—"}</td>
           <td><select className={`status-select ${o.status}`} value={o.status}
             onChange={e => changeStatus(o, e.target.value)}>
             {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
