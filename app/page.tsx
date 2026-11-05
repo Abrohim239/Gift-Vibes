@@ -17,7 +17,7 @@ type Product = {
 type Order = {
   id: string; order_number: number; customer_name: string; order_date: string;
   status: string; delivery_charge: number; cod_charge: number;
-  discount: number; amount_paid: number;
+  discount: number; amount_paid: number; return_courier_loss?: number;
 };
 type Expense = {
   id: string; expense_date: string; category: string;
@@ -38,7 +38,7 @@ const initialForm = () => ({
   packaging_cost: "0", other_unit_cost: "0", stock_quantity: "0",
   low_stock_limit: "5", customer_name: "", order_date: today(),
   status: "pending", delivery_charge: "0", cod_charge: "0",
-  discount: "0", amount_paid: "0", product_id: "", quantity: "1",
+  discount: "0", amount_paid: "0", return_courier_loss: "0", product_id: "", quantity: "1",
   category: "Facebook Ads", expense_date: today(), description: "", amount: ""
 });
 
@@ -223,6 +223,8 @@ export default function Home() {
   const lifetimeDeliveryAndCod = delivered.reduce(
     (sum, o) => sum + Number(o.delivery_charge || 0) + Number(o.cod_charge || 0), 0
   );
+  const lifetimeReturnCourierLoss = orders.filter(o => o.status === "returned")
+    .reduce((sum, o) => sum + Number(o.return_courier_loss || 0), 0);
   // Product Purchase and Packaging costs are already counted per sold item
   // from order_items. Exclude these categories here to avoid double counting.
   const overheadExpenses = expenses.filter(
@@ -242,12 +244,15 @@ export default function Home() {
     lifetimeOrderCosts -
     lifetimeDiscounts -
     lifetimeDeliveryAndCod -
-    lifetimeBusinessExpenses;
+    lifetimeBusinessExpenses -
+    lifetimeReturnCourierLoss;
 
   // Monthly P&L: selected month
   const monthlyOrders = delivered.filter(
     o => (o.order_date || "").slice(0, 7) === selectedMonth
   );
+  const monthlyReturnedOrders = orders.filter(o => o.status === "returned" && (o.order_date || "").slice(0, 7) === selectedMonth);
+  const monthlyReturnCourierLoss = monthlyReturnedOrders.reduce((sum, o) => sum + Number(o.return_courier_loss || 0), 0);
   const monthlyExpenses = overheadExpenses.filter(
     e => (e.expense_date || "").slice(0, 7) === selectedMonth
   );
@@ -275,7 +280,8 @@ export default function Home() {
     monthlyOrderCosts -
     monthlyDiscounts -
     monthlyDeliveryAndCod -
-    monthlyExpenseTotal;
+    monthlyExpenseTotal -
+    monthlyReturnCourierLoss;
 
   const stockValue = products.reduce(
     (sum, p) => sum + Number(p.stock_quantity || 0) * Number(p.purchase_price || 0), 0
@@ -333,7 +339,8 @@ export default function Home() {
         customer_name: String(form.customer_name ?? "").trim(), order_date: form.order_date,
         status: form.status, delivery_charge: Number(form.delivery_charge || 0),
         cod_charge: Number(form.cod_charge || 0), discount: Number(form.discount || 0),
-        amount_paid: Number(form.amount_paid || 0)
+        amount_paid: Number(form.amount_paid || 0),
+        return_courier_loss: Number(form.return_courier_loss || 0)
       };
       if (editing?.type === "order") {
         const upd = await supabase.from("orders").update(orderPayload).eq("id", editing.id);
@@ -422,7 +429,7 @@ export default function Home() {
     else {
       setForm({ ...initialForm(), ...record, customer_name: record.customer_name || "",
         delivery_charge: String(record.delivery_charge ?? 0), cod_charge: String(record.cod_charge ?? 0),
-        discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0) });
+        discount: String(record.discount ?? 0), amount_paid: String(record.amount_paid ?? 0), return_courier_loss: String(record.return_courier_loss ?? 0) });
       const existing = items.filter(it => it.order_id === record.id);
       setOrderCart(existing.length ? existing.map(it => ({ product_id: it.product_id || "", quantity: String(it.quantity || 1), sale_price: String(it.unit_sale_price ?? 0) })) : [{ product_id: "", quantity: "1", sale_price: "" }]);
     }
@@ -618,6 +625,7 @@ export default function Home() {
                 <div className="status-row"><strong>Lifetime Gross Profit / Loss</strong><strong>{money(lifetimeGrossProfit)}</strong></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(lifetimeDeliveryAndCod)}</b></div>
                 <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(lifetimeBusinessExpenses)}</b></div>
+                <div className="status-row"><span>Returned order courier loss</span><b>− {money(lifetimeReturnCourierLoss)}</b></div>
                 <div className="status-row"><strong>Lifetime Net Profit / Loss</strong><strong>{money(lifetimeProfit)}</strong></div>
               </div>
             </div>
@@ -650,6 +658,7 @@ export default function Home() {
                 <div className="status-row"><strong>Monthly Gross Profit / Loss</strong><strong>{money(monthlyGrossProfit)}</strong></div>
                 <div className="status-row"><span>Delivery + COD charges</span><b>− {money(monthlyDeliveryAndCod)}</b></div>
                 <div className="status-row"><span>Overhead expenses (excluding Product Purchase/Packaging)</span><b>− {money(monthlyExpenseTotal)}</b></div>
+                <div className="status-row"><span>Returned order courier loss</span><b>− {money(monthlyReturnCourierLoss)}</b></div>
                 <div className="status-row"><strong>Monthly Net Profit / Loss</strong><strong>{money(monthlyProfit)}</strong></div>
               </div>
             </div>
@@ -782,6 +791,7 @@ export default function Home() {
                     <Field label="COD charge (৳)" type="number" value={form.cod_charge} onChange={v => setForm({ ...form, cod_charge: v })} />
                     <Field label="Discount (৳)" type="number" value={form.discount} onChange={v => setForm({ ...form, discount: v })} />
                     <Field label="Amount paid (৳)" type="number" value={form.amount_paid} onChange={v => setForm({ ...form, amount_paid: v })} />
+                    <Field label="Return Courier Fee Loss (৳)" type="number" value={form.return_courier_loss || "0"} onChange={v => setForm({ ...form, return_courier_loss: v })} />
                   </div>
                 )}
 
@@ -878,14 +888,15 @@ function OrdersTable({ orders, itemTotals, changeStatus, editRecord, deleteRecor
   deleteRecord: (type: "product" | "order" | "expense", id: string) => void;
 }) {
   return <div className="table-scroll">
-    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
+    <table><thead><tr><th>Order</th><th>Customer</th><th>Date</th><th>Order Total</th><th>Profit / Loss</th><th>Return Courier Loss</th><th>Status</th><th>Paid</th><th>Actions</th></tr></thead>
       <tbody>{orders.map(o => {
         const totals = itemTotals[o.id] || { revenue: 0, cost: 0 };
-        const profit = totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
+        const profit = o.status === "returned" ? -Number(o.return_courier_loss || 0) : totals.revenue - totals.cost - Number(o.discount || 0) - Number(o.delivery_charge || 0) - Number(o.cod_charge || 0);
         return <tr key={o.id}>
           <td><b>#{o.order_number}</b></td><td>{o.customer_name}</td><td>{o.order_date}</td>
           <td><b>{money(totals.revenue)}</b></td>
           <td><b style={{ color: profit < 0 ? "#dc2626" : "#15803d" }}>{profit < 0 ? "ক্ষতি " : "লাভ "}{money(Math.abs(profit))}</b></td>
+          <td>{o.status === "returned" ? <b style={{ color: "#dc2626" }}>{money(o.return_courier_loss || 0)}</b> : "—"}</td>
           <td><select className={`status-select ${o.status}`} value={o.status}
             onChange={e => changeStatus(o, e.target.value)}>
             {["pending", "confirmed", "processing", "shipped", "delivered", "cancelled", "returned"].map(s => <option key={s}>{s}</option>)}
