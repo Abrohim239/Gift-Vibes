@@ -17,7 +17,7 @@ type Product = {
 type Order = {
   id: string; order_number: number; customer_name: string; order_date: string;
   status: string; delivery_charge: number; cod_charge: number;
-  discount: number; amount_paid: number; return_courier_loss?: number;
+  discount: number; amount_paid: number; return_courier_loss?: number; stock_deducted?: boolean;
 };
 type Expense = {
   id: string; expense_date: string; category: string;
@@ -343,9 +343,13 @@ export default function Home() {
         return_courier_loss: Number(form.return_courier_loss || 0)
       };
       if (editing?.type === "order") {
+        const existingOrder = orders.find(o => o.id === editing.id);
         const upd = await supabase.from("orders").update(orderPayload).eq("id", editing.id);
         if (upd.error) result = upd;
-        else {
+        else if (existingOrder?.stock_deducted) {
+          // Keep the original items for an order whose stock has already been deducted.
+          result = { error: null };
+        } else {
           const delItems = await supabase.from("order_items").delete().eq("order_id", editing.id);
           if (delItems.error) result = delItems;
           else {
@@ -356,7 +360,13 @@ export default function Home() {
               unit_packaging_cost: Number(row.product!.packaging_cost || 0),
               unit_other_cost: Number(row.product!.other_unit_cost || 0)
             })));
-            result = insItems;
+            if (insItems.error) result = insItems;
+            else if (form.status === "delivered") {
+              result = await supabase.rpc("update_order_status_and_stock", {
+                p_order_id: editing.id,
+                p_status: "delivered"
+              });
+            } else result = { error: null };
           }
         }
       } else {
@@ -373,6 +383,11 @@ export default function Home() {
           if (itemResult.error) {
             await supabase.from("orders").delete().eq("id", orderResult.data.id);
             result = itemResult;
+          } else if (form.status === "delivered") {
+            result = await supabase.rpc("update_order_status_and_stock", {
+              p_order_id: orderResult.data.id,
+              p_status: "delivered"
+            });
           } else result = { error: null };
         }
       }
@@ -439,14 +454,16 @@ export default function Home() {
   async function changeStatus(order: Order, status: string) {
     if (!supabase) return;
 
-    const { error } = await supabase
-      .from("orders")
-      .update({ status })
-      .eq("id", order.id);
+    const { error } = await supabase.rpc("update_order_status_and_stock", {
+      p_order_id: order.id,
+      p_status: status
+    });
 
-    if (error) setError(error.message);
+    if (error) setError("স্ট্যাটাস/স্টক আপডেট হয়নি: " + error.message);
     else {
-      setNotice("অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
+      setNotice(status === "delivered"
+        ? "অর্ডার Delivered হয়েছে এবং স্টক একবার কমানো হয়েছে।"
+        : "অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
       await load();
     }
   }
@@ -792,6 +809,11 @@ export default function Home() {
                     <Field label="Discount (৳)" type="number" value={form.discount} onChange={v => setForm({ ...form, discount: v })} />
                     <Field label="Amount paid (৳)" type="number" value={form.amount_paid} onChange={v => setForm({ ...form, amount_paid: v })} />
                     <Field label="Return Courier Fee Loss (৳)" type="number" value={form.return_courier_loss || "0"} onChange={v => setForm({ ...form, return_courier_loss: v })} />
+                    {editing?.type === "order" && orders.find(o => o.id === editing.id)?.stock_deducted && (
+                      <p className="footnote" style={{ gridColumn: "1 / -1" }}>
+                        এই অর্ডারের স্টক ইতিমধ্যে কমানো হয়েছে। Save করলে আগের পণ্যের Quantity অপরিবর্তিত থাকবে।
+                      </p>
+                    )}
                   </div>
                 )}
 
