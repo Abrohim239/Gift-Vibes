@@ -868,7 +868,14 @@ export default function Home() {
                       <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
                       <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
                       <td>{money(p.purchase_price)}</td>
-                      <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button> <button className="icon-btn" title="Stock History" onClick={() => void openStockHistory(p)}><History size={15}/></button></td>
+                      <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button> <button
+  type="button"
+  className="icon-btn"
+  title="Stock History"
+  onClick={() => openStockHistory(p)}
+>
+  <History size={15} />
+</button><History size={15}/></button></td>
                     </tr>)}</tbody>
                   </table>
                   {products.length === 0 && <div className="empty-state">এখনো কোনো পণ্য যোগ করা হয়নি। Add Product চাপুন।</div>}
