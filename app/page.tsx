@@ -6,7 +6,7 @@ import { supabase, supabaseReady } from "@/lib/supabase";
 import {
   LayoutDashboard, Package, ShoppingBag, Wallet, RefreshCw, Plus,
   Menu, X, ArrowUpRight, AlertCircle, Download, LogOut, TrendingUp, Pencil, Trash2,
-  TrendingDown, CalendarDays, History
+  TrendingDown, CalendarDays
 } from "lucide-react";
 
 type Product = {
@@ -17,7 +17,7 @@ type Product = {
 type Order = {
   id: string; order_number: number; customer_name: string; order_date: string;
   status: string; delivery_charge: number; cod_charge: number;
-  discount: number; amount_paid: number; return_courier_loss?: number; stock_deducted?: boolean;
+  discount: number; amount_paid: number; return_courier_loss?: number;
 };
 type Expense = {
   id: string; expense_date: string; category: string;
@@ -57,10 +57,6 @@ export default function Home() {
   const [form, setForm] = useState<any>(initialForm());
   const [editing, setEditing] = useState<any>(null);
   const [orderCart, setOrderCart] = useState<any[]>([{ product_id: "", quantity: "1", sale_price: "" }]);
-  const [stockHistory, setStockHistory] = useState<any[]>([]);
-  const [historyProduct, setHistoryProduct] = useState<Product | null>(null);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [historyError, setHistoryError] = useState("");
 
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
@@ -303,22 +299,6 @@ export default function Home() {
     setShowForm(true);
   }
 
-  async function openStockHistory(product: Product) {
-    if (!supabase) return;
-    setHistoryProduct(product);
-    setStockHistory([]);
-    setHistoryError("");
-    setHistoryLoading(true);
-    const { data, error } = await supabase
-      .from("product_stock_history")
-      .select("*")
-      .eq("product_id", product.id)
-      .order("changed_at", { ascending: false });
-    if (error) setHistoryError(error.message);
-    else setStockHistory(data || []);
-    setHistoryLoading(false);
-  }
-
   async function saveRecord(ev: React.FormEvent) {
     ev.preventDefault();
     if (!supabase) return;
@@ -363,13 +343,9 @@ export default function Home() {
         return_courier_loss: Number(form.return_courier_loss || 0)
       };
       if (editing?.type === "order") {
-        const existingOrder = orders.find(o => o.id === editing.id);
         const upd = await supabase.from("orders").update(orderPayload).eq("id", editing.id);
         if (upd.error) result = upd;
-        else if (existingOrder?.stock_deducted) {
-          // Keep the original items for an order whose stock has already been deducted.
-          result = { error: null };
-        } else {
+        else {
           const delItems = await supabase.from("order_items").delete().eq("order_id", editing.id);
           if (delItems.error) result = delItems;
           else {
@@ -380,13 +356,7 @@ export default function Home() {
               unit_packaging_cost: Number(row.product!.packaging_cost || 0),
               unit_other_cost: Number(row.product!.other_unit_cost || 0)
             })));
-            if (insItems.error) result = insItems;
-            else if (form.status === "delivered") {
-              result = await supabase.rpc("update_order_status_and_stock", {
-                p_order_id: editing.id,
-                p_status: "delivered"
-              });
-            } else result = { error: null };
+            result = insItems;
           }
         }
       } else {
@@ -403,11 +373,6 @@ export default function Home() {
           if (itemResult.error) {
             await supabase.from("orders").delete().eq("id", orderResult.data.id);
             result = itemResult;
-          } else if (form.status === "delivered") {
-            result = await supabase.rpc("update_order_status_and_stock", {
-              p_order_id: orderResult.data.id,
-              p_status: "delivered"
-            });
           } else result = { error: null };
         }
       }
@@ -474,16 +439,14 @@ export default function Home() {
   async function changeStatus(order: Order, status: string) {
     if (!supabase) return;
 
-    const { error } = await supabase.rpc("update_order_status_and_stock", {
-      p_order_id: order.id,
-      p_status: status
-    });
+    const { error } = await supabase
+      .from("orders")
+      .update({ status })
+      .eq("id", order.id);
 
-    if (error) setError("স্ট্যাটাস/স্টক আপডেট হয়নি: " + error.message);
+    if (error) setError(error.message);
     else {
-      setNotice(status === "delivered"
-        ? "অর্ডার Delivered হয়েছে এবং স্টক একবার কমানো হয়েছে।"
-        : "অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
+      setNotice("অর্ডারের স্ট্যাটাস আপডেট হয়েছে।");
       await load();
     }
   }
@@ -829,11 +792,6 @@ export default function Home() {
                     <Field label="Discount (৳)" type="number" value={form.discount} onChange={v => setForm({ ...form, discount: v })} />
                     <Field label="Amount paid (৳)" type="number" value={form.amount_paid} onChange={v => setForm({ ...form, amount_paid: v })} />
                     <Field label="Return Courier Fee Loss (৳)" type="number" value={form.return_courier_loss || "0"} onChange={v => setForm({ ...form, return_courier_loss: v })} />
-                    {editing?.type === "order" && orders.find(o => o.id === editing.id)?.stock_deducted && (
-                      <p className="footnote" style={{ gridColumn: "1 / -1" }}>
-                        এই অর্ডারের স্টক ইতিমধ্যে কমানো হয়েছে। Save করলে আগের পণ্যের Quantity অপরিবর্তিত থাকবে।
-                      </p>
-                    )}
                   </div>
                 )}
 
@@ -848,7 +806,7 @@ export default function Home() {
                     <Field label="Amount (৳) *" type="number" value={form.amount} onChange={v => setForm({ ...form, amount: v })} required />
                     <Field label="Description" value={form.description} onChange={v => setForm({ ...form, description: v })} />
                     <p className="footnote" style={{ gridColumn: "1 / -1" }}>
-                      Product purchase ও Packaging খরচ এখানে নথিভুক্ত করা যাবে, তবে Net Profit-এ এই দুই category আবার বাদ হবে না—কারণ বিক্রি হওয়া পণ্যের খরচ order_items থেকে হিসাব করা হয়।
+                      Product purchase ও Packaging খরচ এখানে নথিভুক্ত করা যাবে। তবে Net Profit হিসাবের সময় এই দুই category দ্বিতীয়বার গণনা হবে না—কারণ বিক্রি হওয়া পণ্যের খরচ order_items থেকে হিসাব করা হয়।
                     </p>
                   </div>
                 )}
@@ -868,14 +826,7 @@ export default function Home() {
                       <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
                       <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
                       <td>{money(p.purchase_price)}</td>
-                      <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button> <button
-  type="button"
-  className="icon-btn"
-  title="Stock History"
-  onClick={() => openStockHistory(p)}
->
-  <History size={15} />
-</button><History size={15}/></button></td>
+                      <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button></td>
                     </tr>)}</tbody>
                   </table>
                   {products.length === 0 && <div className="empty-state">এখনো কোনো পণ্য যোগ করা হয়নি। Add Product চাপুন।</div>}
@@ -903,41 +854,6 @@ export default function Home() {
 
         <footer className="footer">Gift Vibes Business Manager <span>•</span> Private business workspace</footer>
       </main>
-      {historyProduct && (
-        <div className="modal-backdrop" onClick={() => setHistoryProduct(null)}>
-          <div className="panel" style={{ width: "min(900px, 96vw)", maxHeight: "85vh", overflow: "auto", padding: 20 }} onClick={e => e.stopPropagation()}>
-            <div className="panel-title">
-              <div>
-                <h3>Stock History — {historyProduct.name}</h3>
-                <p>কোন তারিখে কত পিস Stock যোগ বা কমানো হয়েছে এবং পরিবর্তনের পর মোট Stock কত ছিল</p>
-              </div>
-              <button type="button" className="icon-btn" onClick={() => setHistoryProduct(null)}><X size={17}/></button>
-            </div>
-            {historyLoading ? <div className="empty-state">History লোড হচ্ছে...</div> :
-              historyError ? <div className="empty-state" style={{ color: "#dc2626" }}>{historyError}</div> :
-              stockHistory.length === 0 ? <div className="empty-state">এই পণ্যের কোনো Stock History পাওয়া যায়নি। SQL চালানোর আগের পরিবর্তনের রেকর্ড স্বয়ংক্রিয়ভাবে তৈরি হবে না।</div> :
-              <div className="table-scroll">
-                <table>
-                  <thead><tr><th>Date & Time</th><th>বিবরণ</th><th>আগের Stock</th><th>পরিবর্তন</th><th>পরের Stock</th></tr></thead>
-                  <tbody>{stockHistory.map((h: any) => (
-                    <tr key={h.id}>
-                      <td>{new Date(h.changed_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</td>
-                      <td>{h.note || "Stock updated"}</td>
-                      <td>{Number(h.previous_quantity || 0)} পিস</td>
-                      <td style={{ color: Number(h.quantity_change) >= 0 ? "#15803d" : "#dc2626", fontWeight: 700 }}>
-                        {Number(h.quantity_change) > 0 ? "+" : ""}{Number(h.quantity_change || 0)} পিস
-                      </td>
-                      <td><b>{Number(h.new_quantity || 0)} পিস</b></td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>}
-            <div className="form-footer">
-              <button className="btn secondary" onClick={() => setHistoryProduct(null)}>বন্ধ করুন</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
