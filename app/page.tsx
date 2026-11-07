@@ -1,7 +1,7 @@
 
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { supabase, supabaseReady } from "@/lib/supabase";
 import {
   LayoutDashboard, Package, ShoppingBag, Wallet, RefreshCw, Plus,
@@ -305,18 +305,31 @@ export default function Home() {
 
   async function openStockHistory(product: Product) {
     if (!supabase) return;
+
+    if (historyProduct?.id === product.id) {
+      setHistoryProduct(null);
+      return;
+    }
+
     setHistoryProduct(product);
     setStockHistory([]);
     setHistoryError("");
     setHistoryLoading(true);
-    const { data, error } = await supabase
-      .from("product_stock_history")
-      .select("*")
-      .eq("product_id", product.id)
-      .order("changed_at", { ascending: false });
-    if (error) setHistoryError(error.message);
-    else setStockHistory(data || []);
-    setHistoryLoading(false);
+
+    try {
+      const { data, error } = await supabase
+        .from("product_stock_history")
+        .select("*")
+        .eq("product_id", product.id)
+        .order("changed_at", { ascending: false });
+
+      if (error) setHistoryError(error.message);
+      else setStockHistory(data || []);
+    } catch (err) {
+      setHistoryError(err instanceof Error ? err.message : "History লোড করা যায়নি।");
+    } finally {
+      setHistoryLoading(false);
+    }
   }
 
   async function saveRecord(ev: React.FormEvent) {
@@ -864,12 +877,60 @@ export default function Home() {
               tab === "Products & Stock" ? (
                 <div className="panel table-panel">
                   <table><thead><tr><th>Product</th><th>Stock</th><th>Purchase price</th><th>Unit cost*</th><th>Actions</th></tr></thead>
-                    <tbody>{products.map(p => <tr key={p.id}>
-                      <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
-                      <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
-                      <td>{money(p.purchase_price)}</td>
-                      <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td><td><button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button> <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button> <button className="icon-btn" title="Stock History" onClick={() => void openStockHistory(p)}><History size={15}/></button></td>
-                    </tr>)}</tbody>
+                    <tbody>{products.map(p => (
+                      <Fragment key={p.id}>
+                        <tr>
+                          <td><b>{p.name}</b><small>{p.sku || "No SKU"}</small></td>
+                          <td><span className={p.stock_quantity <= p.low_stock_limit ? "low-badge" : "pill"}>{p.stock_quantity}</span></td>
+                          <td>{money(p.purchase_price)}</td>
+                          <td>{money(Number(p.purchase_price) + Number(p.packaging_cost) + Number(p.other_unit_cost))}</td>
+                          <td>
+                            <button className="icon-btn" title="Edit" onClick={() => editRecord("product", p)}><Pencil size={15}/></button>{" "}
+                            <button className="icon-btn" title="Delete" onClick={() => void deleteRecord("product", p.id)}><Trash2 size={15}/></button>{" "}
+                            <button
+                              className="icon-btn"
+                              title="Stock History"
+                              aria-expanded={historyProduct?.id === p.id}
+                              onClick={() => void openStockHistory(p)}
+                            ><History size={15}/></button>
+                          </td>
+                        </tr>
+                        {historyProduct?.id === p.id && (
+                          <tr>
+                            <td colSpan={5} style={{ padding: 0, background: "#f8fafc" }}>
+                              <div style={{ padding: 16, borderTop: "1px solid #e2e8f0", borderBottom: "1px solid #e2e8f0" }}>
+                                <div className="panel-title" style={{ marginBottom: 12 }}>
+                                  <div>
+                                    <h3>Stock History — {p.name}</h3>
+                                    <p>কোন তারিখে কত পিস Stock যোগ বা কমানো হয়েছে এবং পরিবর্তনের পর মোট Stock কত ছিল</p>
+                                  </div>
+                                  <button type="button" className="icon-btn" title="Close history" onClick={() => setHistoryProduct(null)}><X size={17}/></button>
+                                </div>
+                                {historyLoading ? <div className="empty-state">History লোড হচ্ছে...</div> :
+                                  historyError ? <div className="empty-state" style={{ color: "#dc2626" }}>{historyError}</div> :
+                                  stockHistory.length === 0 ? <div className="empty-state">এই পণ্যের কোনো Stock History পাওয়া যায়নি। SQL চালানোর আগের পরিবর্তনের রেকর্ড স্বয়ংক্রিয়ভাবে তৈরি হবে না।</div> :
+                                  <div className="table-scroll">
+                                    <table>
+                                      <thead><tr><th>Date & Time</th><th>বিবরণ</th><th>আগের Stock</th><th>পরিবর্তন</th><th>পরের Stock</th></tr></thead>
+                                      <tbody>{stockHistory.map((h: any) => (
+                                        <tr key={h.id}>
+                                          <td>{new Date(h.changed_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</td>
+                                          <td>{h.note || "Stock updated"}</td>
+                                          <td>{Number(h.previous_quantity || 0)} পিস</td>
+                                          <td style={{ color: Number(h.quantity_change) >= 0 ? "#15803d" : "#dc2626", fontWeight: 700 }}>
+                                            {Number(h.quantity_change) > 0 ? "+" : ""}{Number(h.quantity_change || 0)} পিস
+                                          </td>
+                                          <td><b>{Number(h.new_quantity || 0)} পিস</b></td>
+                                        </tr>
+                                      ))}</tbody>
+                                    </table>
+                                  </div>}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}</tbody>
                   </table>
                   {products.length === 0 && <div className="empty-state">এখনো কোনো পণ্য যোগ করা হয়নি। Add Product চাপুন।</div>}
                   <p className="footnote">* প্রতি ইউনিটের আনুমানিক মোট খরচ (ক্রয় + প্যাকেজিং + অন্যান্য খরচ)।</p>
@@ -896,41 +957,6 @@ export default function Home() {
 
         <footer className="footer">Gift Vibes Business Manager <span>•</span> Private business workspace</footer>
       </main>
-      {historyProduct && (
-        <div className="modal-backdrop" onClick={() => setHistoryProduct(null)}>
-          <div className="panel" style={{ width: "min(900px, 96vw)", maxHeight: "85vh", overflow: "auto", padding: 20 }} onClick={e => e.stopPropagation()}>
-            <div className="panel-title">
-              <div>
-                <h3>Stock History — {historyProduct.name}</h3>
-                <p>কোন তারিখে কত পিস Stock যোগ বা কমানো হয়েছে এবং পরিবর্তনের পর মোট Stock কত ছিল</p>
-              </div>
-              <button type="button" className="icon-btn" onClick={() => setHistoryProduct(null)}><X size={17}/></button>
-            </div>
-            {historyLoading ? <div className="empty-state">History লোড হচ্ছে...</div> :
-              historyError ? <div className="empty-state" style={{ color: "#dc2626" }}>{historyError}</div> :
-              stockHistory.length === 0 ? <div className="empty-state">এই পণ্যের কোনো Stock History পাওয়া যায়নি। SQL চালানোর আগের পরিবর্তনের রেকর্ড স্বয়ংক্রিয়ভাবে তৈরি হবে না।</div> :
-              <div className="table-scroll">
-                <table>
-                  <thead><tr><th>Date & Time</th><th>বিবরণ</th><th>আগের Stock</th><th>পরিবর্তন</th><th>পরের Stock</th></tr></thead>
-                  <tbody>{stockHistory.map((h: any) => (
-                    <tr key={h.id}>
-                      <td>{new Date(h.changed_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</td>
-                      <td>{h.note || "Stock updated"}</td>
-                      <td>{Number(h.previous_quantity || 0)} পিস</td>
-                      <td style={{ color: Number(h.quantity_change) >= 0 ? "#15803d" : "#dc2626", fontWeight: 700 }}>
-                        {Number(h.quantity_change) > 0 ? "+" : ""}{Number(h.quantity_change || 0)} পিস
-                      </td>
-                      <td><b>{Number(h.new_quantity || 0)} পিস</b></td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>}
-            <div className="form-footer">
-              <button className="btn secondary" onClick={() => setHistoryProduct(null)}>বন্ধ করুন</button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
